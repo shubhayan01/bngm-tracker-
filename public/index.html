@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JW BNGM Tracker</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="bg-orbs" aria-hidden="true"><span></span><span></span><span></span></div>
+
+  <!-- LOGIN -->
+  <div id="login" class="login-wrap">
+    <div class="login-card glass">
+      <button id="themeToggleLogin" class="theme-toggle" title="Toggle theme" aria-label="Toggle light / dark theme">🌙</button>
+      <div class="brand">
+        <div class="brand-mark">JW</div>
+        <div>
+          <h1>BNGM Tracker</h1>
+          <p class="muted">Budget &amp; Gross-Margin</p>
+        </div>
+      </div>
+      <label class="field">
+        <span>Access level</span>
+        <select id="loginRole">
+          <option value="super">Super Admin — full access</option>
+          <option value="admin">Admin — all dept reports (except Content)</option>
+          <option value="bizdev">Business Development</option>
+          <option value="seo">SEO</option>
+          <option value="content">Content</option>
+          <option value="social">Social Media</option>
+          <option value="webdev">Web Development</option>
+          <option value="perfmkt">Performance Marketing</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Password</span>
+        <input id="loginPassword" type="password" placeholder="Enter password" autocomplete="current-password" />
+      </label>
+      <button id="loginBtn" class="btn btn-primary btn-block">Sign in</button>
+      <p id="loginError" class="error"></p>
+    </div>
+  </div>
+
+  <!-- APP -->
+  <div id="app" class="app hidden">
+    <header class="topbar glass">
+      <div class="topbar-left">
+        <div class="brand-mark sm">JW</div>
+        <strong>BNGM</strong>
+        <span id="fyBadge" class="badge"></span>
+        <span id="fxBadge" class="badge fx" title="Live USD → INR rate"></span>
+      </div>
+      <nav class="tabs" id="tabs">
+        <button class="tab active" data-view="entry">✏️ Update</button>
+        <button class="tab" data-view="dashboard">📊 Reports</button>
+        <button class="tab" data-view="tools">🧰 Tools</button>
+        <button class="tab" data-view="accounts">🏢 Client List</button>
+        <button class="tab settings-only hidden" data-view="settings">⚙️ Assumptions</button>
+      </nav>
+      <div class="topbar-right">
+        <button id="usdToggle" class="pill-toggle" title="Show / hide USD conversions">$</button>
+        <button id="themeToggle" class="theme-toggle" title="Toggle theme" aria-label="Toggle light / dark theme">🌙</button>
+        <span id="roleBadge" class="role-badge"></span>
+        <button id="logoutBtn" class="btn btn-ghost">Logout</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <!-- ENTRY / UPDATE VIEW -->
+      <section id="view-entry" class="view">
+        <div class="entry-layout">
+          <div class="entry-panel glass">
+            <div class="entry-head">
+              <label class="eh-field"><span>Client</span>
+                <select id="e_client"></select>
+              </label>
+              <label class="eh-field"><span>Month</span>
+                <select id="e_month"></select>
+              </label>
+              <div class="eh-field mode-field"><span>Type</span>
+                <div id="e_mode" class="mode-toggle">
+                  <button data-mode="planned" type="button">🎯 Planned</button>
+                  <button data-mode="actual" type="button" class="active">✅ Actual</button>
+                </div>
+              </div>
+            </div>
+            <div id="entryBody" class="entry-body">
+              <p class="muted entry-hint">Pick a client above to begin — then everything is one screen.</p>
+            </div>
+          </div>
+          <aside class="preview-panel glass">
+            <h3>Live costing</h3>
+            <div id="preview" class="preview">
+              <p class="muted">Start an entry — figures update as you fill.</p>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- DASHBOARD / REPORTS VIEW -->
+      <section id="view-dashboard" class="view hidden">
+        <div class="view-head">
+          <h2>Reports</h2>
+          <div class="controls">
+            <label>View
+              <select id="dashMode">
+                <option value="auto">Actual (fallback to plan)</option>
+                <option value="actual">Actual only</option>
+                <option value="planned">Budget / Plan</option>
+              </select>
+            </label>
+            <button id="dashRefresh" class="btn btn-ghost">Refresh</button>
+          </div>
+        </div>
+
+        <h3>Plan vs Actual</h3>
+        <div id="cmpKpis" class="cmp-row"></div>
+        <div class="table-scroll glass"><table id="cmpTable" class="data"></table></div>
+
+        <h3>Portfolio KPIs (selected view)</h3>
+        <div id="dashKpis" class="kpi-row"></div>
+        <h3>Monthly portfolio snapshot</h3>
+        <div class="table-scroll glass"><table id="monthlyTable" class="data"></table></div>
+
+        <div class="view-head" style="margin-top:22px">
+          <h3 style="margin:0">Compare months</h3>
+          <div class="controls">
+            <span class="muted small">Tick two or more months to compare side by side.</span>
+            <button id="cmpMonthsClear" class="btn btn-ghost btn-sm">Clear</button>
+          </div>
+        </div>
+        <div id="cmpMonthsPick" class="month-pick"></div>
+        <div class="table-scroll glass"><table id="cmpMonthsTable" class="data"></table></div>
+
+        <h3>Wing / department summary (YTD)</h3>
+        <div class="table-scroll glass"><table id="wingTable" class="data"></table></div>
+
+        <div class="view-head" style="margin-top:22px">
+          <h3 style="margin:0">Account ranking (YTD, by GM%)</h3>
+          <div class="controls">
+            <label>Department
+              <select id="rankWingFilter"><option value="">All departments</option></select>
+            </label>
+            <input id="rankSearch" class="rank-search" type="search" placeholder="Filter by client name…" />
+          </div>
+        </div>
+        <div class="table-scroll glass"><table id="rankTable" class="data"></table></div>
+      </section>
+
+      <!-- TOOLS VIEW -->
+      <section id="view-tools" class="view hidden">
+        <div class="view-head">
+          <h2>Tools</h2>
+          <button id="addToolBtn" class="btn btn-primary hidden">+ New tool</button>
+        </div>
+        <p class="muted section-note">Each tool, its monthly cost, when it started, whether it's active, and how much it has cost so far. Stopping a tool keeps its history.</p>
+        <div class="tools-layout">
+          <div class="table-scroll glass"><table id="toolsTable" class="data"></table></div>
+          <aside id="toolsCumulative" class="cum-panel glass"></aside>
+        </div>
+      </section>
+
+      <!-- CLIENTS / ACCOUNTS VIEW -->
+      <section id="view-accounts" class="view hidden">
+        <div class="view-head">
+          <h2>Client List</h2>
+          <button id="addAccountBtn" class="btn btn-primary">+ New client</button>
+        </div>
+        <p class="muted section-note">A client is simply Active or Inactive. Inactive clients are hidden from the Update picker but keep all past figures.</p>
+        <div class="table-scroll glass"><table id="accountsTable" class="data"></table></div>
+      </section>
+
+      <!-- ASSUMPTIONS VIEW (super only) -->
+      <section id="view-settings" class="view hidden">
+        <h2>Assumptions</h2>
+        <div class="cards">
+          <div class="card glass">
+            <h3>Resource rates &amp; assumptions</h3>
+            <p class="muted">Add and fetch the values used for every cost calculation.</p>
+            <div id="assumptionsForm" class="grid-form"></div>
+            <button id="saveAssumptions" class="btn btn-primary">Save assumptions</button>
+          </div>
+          <div class="card glass">
+            <h3>Team / resources</h3>
+            <p class="muted">Add people and set who is a senior or junior resource (drives the ₹/hr rate).</p>
+            <button id="manageTeamBtn" class="btn btn-primary">Manage team</button>
+          </div>
+          <div class="card glass">
+            <h3>Monthly tool &amp; tech pool (₹)</h3>
+            <p class="muted">Split across accounts by revenue share each month.</p>
+            <div id="toolPoolForm" class="grid-form small"></div>
+            <button id="saveToolPool" class="btn btn-primary">Save tool pool</button>
+          </div>
+          <div class="card glass">
+            <h3>Outsourcing options</h3>
+            <p class="muted">The list of job types shown when adding an outsourcing / freelance cost on an entry. Add or remove options here.</p>
+            <div id="jobTypesList" class="chip-list"></div>
+            <div class="team-add">
+              <input id="jt_new" placeholder="New outsourcing option" />
+              <button id="jt_add" class="btn btn-sm btn-primary">+ Add</button>
+            </div>
+            <button id="saveJobTypes" class="btn btn-primary" style="margin-top:12px">Save outsourcing list</button>
+          </div>
+          <div class="card glass">
+            <h3>Role passwords</h3>
+            <div id="passwordForm" class="grid-form"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- modal -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-card glass">
+      <button id="modalClose" class="modal-close" title="Close">✕</button>
+      <h3 id="modalTitle"></h3>
+      <div id="modalBody"></div>
+      <div id="modalActions" class="modal-actions">
+        <button id="modalCancel" class="btn btn-ghost">Cancel</button>
+        <button id="modalOk" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

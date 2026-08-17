@@ -1,0 +1,7 @@
+node_modules/
+data/db.json*
+*.tmp
+seed-data.json
+
+# raw source workbook holds the same financial data we already keep out of git
+*.xlsx
