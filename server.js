@@ -929,13 +929,57 @@ const DEFAULT_PASSWORDS = {
   super: 'super123', admin: 'admin123', bizdev: 'bizdev123', seo: 'seo123', content: 'content123',
   social: 'social123', webdev: 'webdev123', perfmkt: 'perfmkt123',
 };
+
+// First-ever boot with an empty datastore (e.g. a fresh free-tier deploy where
+// `npm run seed` was never run and the sensitive seed files are not in the repo):
+// create the default role logins plus a minimal, NON-SENSITIVE baseline config so
+// the app is immediately usable and you can log in. No client names, employee
+// details, or real bill rates are embedded here — accounts and resources are added
+// from the UI, and the rate/GM figures below are neutral placeholders the `super`
+// user changes in Settings → Assumptions.
+function bootstrapEmptyStore(store) {
+  store.users = Object.keys(ROLES).map((role, i) => ({
+    id: i + 1,
+    role,
+    passwordHash: bcrypt.hashSync(DEFAULT_PASSWORDS[role] || role + '123', 10),
+  }));
+
+  const months = ['Mar-26', 'Apr-26', 'May-26', 'Jun-26', 'Jul-26', 'Aug-26',
+    'Sep-26', 'Oct-26', 'Nov-26', 'Dec-26', 'Jan-27', 'Feb-27', 'Mar-27'];
+  const toolPool = {};
+  for (const m of months) toolPool[m] = 0;
+
+  store.settings = {
+    // Placeholder rates/thresholds — NOT the real figures. Edit in Assumptions.
+    assumptions: {
+      srRate: 1000, midRate: 750, jrRate: 500,
+      srCapacity: 150, jrCapacity: 170, resourceMonthlyHours: 180,
+      contingency: 0.05, gmMin: 0.28, gmHealthy: 0.40, fy: 'FY 2026-27',
+    },
+    months,
+    wings: ['Content Creation', 'SEO', 'SMM', 'Web Dev', 'Performance Mktg', 'Guest Posting'],
+    jobTypes: ['Content Writing', 'Editing & Proofreading', 'Copywriting', 'Graphic Design',
+      'Video Editing', 'Guest Posting', 'Link Building', 'Performance Mktg', 'Web Development', 'Others'],
+    toolPool,
+    tools: [],
+    toolBudgets: {},
+  };
+
+  store.accounts = [];
+  store.associates = [];
+  store.entries = [];
+  store.meta = store.meta || {};
+}
+
 function migrate() {
   const store = db.get();
-  if (!store.users || store.users.length === 0) {
-    console.log('\n⚠  No users found. Run `npm run seed` first to load data + create logins.\n');
-    return;
-  }
   let dirty = false;
+
+  if (!store.users || store.users.length === 0) {
+    bootstrapEmptyStore(store);
+    dirty = true;
+    console.log('  ✓ first run: seeded 8 role logins + baseline config (no client/staff data — add via the UI)');
+  }
 
   // 1) a login row for every role we now support
   for (const role of Object.keys(ROLES)) {
