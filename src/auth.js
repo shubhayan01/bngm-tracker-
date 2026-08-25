@@ -11,15 +11,17 @@ const jwt = require('jsonwebtoken');
 // `except`: only meaningful with wings '*' — wing names this role must NOT see.
 // `readOnly`: role can view reports but cannot create/edit anything.
 const ROLES = {
-  // C. Super — everything.
-  super: { label: 'Super Admin', wings: '*', canCreateAccounts: true, canManageUsers: true, canEditSettings: true, canManageTools: true },
+  // C. Super — everything. Only Super can edit / delete clients (departments may
+  // only add them) and assign a client to departments (user, 2026-08-21).
+  super: { label: 'Super Admin', wings: '*', canCreateAccounts: true, canManageUsers: true, canEditSettings: true, canManageTools: true, canManageClients: true },
 
   // B. Admin — reports of all departments except Content. Read-only.
-  admin: { label: 'Admin', wings: '*', except: ['Content Creation'], readOnly: true, canCreateAccounts: false, canManageUsers: false, canEditSettings: false, canManageTools: false },
+  admin: { label: 'Admin', wings: '*', except: ['Content Creation'], readOnly: true, canCreateAccounts: false, canManageUsers: false, canEditSettings: false, canManageTools: false, canManageClients: false },
 
   // Business Development — kept as a scoped department-style role. It has no delivery
   // wing of its own, so this starts empty; add wing names to grant visibility.
-  bizdev: { label: 'Business Development', wings: [], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: true },
+  // Tool editing is Super-only (user, 2026-08-21) — bizdev can no longer manage tools.
+  bizdev: { label: 'Business Development', wings: [], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false },
 
   // A. Departments — each scoped to its own wing(s).
   seo: { label: 'SEO', wings: ['SEO', 'Guest Posting'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false },
@@ -61,5 +63,7 @@ function visibleWings(role, allWings) {
   if (r.wings === '*') return (allWings || []).filter((w) => roleCanSeeWing(role, w));
   return r.wings;
 }
+
+
 
 module.exports = { ROLES, signToken, verifyToken, roleCanSeeWing, visibleWings, JWT_SECRET };

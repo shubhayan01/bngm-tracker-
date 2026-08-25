@@ -4,8 +4,12 @@ A simplified, conversational replacement for the 12-tab **JW BNGM (Budget & Gros
 
 ## Quick start
 
+Requires a **MySQL / MariaDB** database (local for dev, Hostinger's MySQL in production).
+
 ```bash
 npm install        # first time only
+cp .env.example .env   # then edit: DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME + JWT_SECRET
+npm run db:test    # confirm the database connection works
 npm run seed       # loads accounts/associates from the workbook + creates logins (first time only)
 npm start          # → http://localhost:3000
 ```
@@ -98,18 +102,24 @@ All rates, capacities, the contingency %, and both GM thresholds are editable by
 ## Architecture
 
 - **Backend:** Node + Express (`server.js`), JWT auth (`src/auth.js`), GM engine (`src/compute.js`).
-- **Storage:** JSON file at `data/db.json` via `src/db.js` (serialized atomic writes). Zero native dependencies. Swappable for SQLite/Postgres later — only `src/db.js` changes.
+- **Storage:** **MySQL / MariaDB** via `src/db.js` (pure-JS `mysql2`, no native build). Each collection is one JSON row in a `kv_store` table; the store loads into memory at boot and is flushed to MySQL in a transaction on every save. Connection settings come from `.env` (`DB_HOST`/`DB_PORT`/`DB_USER`/`DB_PASSWORD`/`DB_NAME`). Run a **single** app process (the store is held in memory and flushed whole).
 - **Frontend:** plain HTML/CSS/JS in `public/` (no build step).
 - **Seed data:** `seed-data.json`, extracted from `JW BNGM (Budget & GM) Tracker_SMM.xlsx`.
 
-## Deploying to the cloud (true multi-user)
+## Deploying to Hostinger (true multi-user)
 
-1. Push this folder to a Git repo.
-2. Deploy to Render / Railway / Fly.io as a Node web service (`npm install` → `npm start`).
-3. Set a **`JWT_SECRET`** environment variable (any long random string).
-4. Attach a **persistent disk** mounted at `data/` so `db.json` survives restarts — or migrate `src/db.js` to SQLite/Postgres for higher concurrency.
-5. Run `npm run seed` once on the server (or commit a pre-seeded `data/db.json`).
+See **[DEPLOY.md](DEPLOY.md)** for the full step-by-step (VPS + MySQL + PM2 + Nginx + HTTPS).
+In short:
+
+1. Use a **Hostinger VPS** (shared/web hosting can't run Node). Create a **MySQL database + user** in hPanel.
+2. Get the code on the server, `npm install --omit=dev`, and fill in `.env` (DB creds + a random `JWT_SECRET`).
+3. `npm run db:test` → `npm run seed` (once).
+4. `pm2 start ecosystem.config.js && pm2 save && pm2 startup` to keep it running.
+5. Front it with Nginx and get free HTTPS via certbot. Then **change all default passwords**.
+
+The data lives in MySQL, so back it up with `mysqldump` (or hPanel's database backups).
 
 ## Resetting
 
-`npm run reset` wipes `data/db.json` and reloads seed data + default logins. **This deletes all entered data.**
+`npm run reset` **wipes the MySQL data** and reloads seed data + default logins.
+**This deletes all entered data — never run it on a live system.**

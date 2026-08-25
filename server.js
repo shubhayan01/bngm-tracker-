@@ -1,3 +1,4 @@
+try { require('dotenv').config(); } catch { /* .env is optional; real env vars still work */ }
 const path = require('path');
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -6,6 +7,8 @@ const { ROLES, signToken, verifyToken, roleCanSeeWing, visibleWings } = require(
 const compute = require('./src/compute');
 const fx = require('./src/fx');
 const roster = require('./src/roster');
+const clients = require('./src/clients');
+const groq = require('./src/groq');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -60,6 +63,35 @@ function findEntry(accountId, month) {
   return db.get().entries.find((e) => e.accountId === accountId && e.month === month);
 }
 
+// ---------- dynamic months (user, 2026-08-21) ----------
+// The month list is no longer a fixed FY. Entries may target any Month-Year the
+// user picks (key format "Mon-YY", e.g. "Aug-26"); a new key is added to the
+// catalogue on the fly so reports, the tool pool and the plan/actual picker follow.
+const MONTHS3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function monthOrder(key) {
+  const m = /^([A-Za-z]{3})-(\d{2})$/.exec(String(key || ''));
+  if (!m) return Infinity;
+  const mon = m[1][0].toUpperCase() + m[1].slice(1, 3).toLowerCase();
+  const i = MONTHS3.indexOf(mon);
+  if (i < 0) return Infinity;
+  return (2000 + Number(m[2])) * 12 + i;
+}
+function validMonthKey(key) {
+  return monthOrder(key) !== Infinity;
+}
+// Register a month key in the catalogue if it isn't there yet, keeping the list
+// in chronological order and giving it a zero tool-pool slot.
+function ensureMonth(key) {
+  const s = settings();
+  if (!Array.isArray(s.months)) s.months = [];
+  if (!s.months.includes(key)) {
+    s.months.push(key);
+    s.months.sort((a, b) => monthOrder(a) - monthOrder(b));
+  }
+  if (!s.toolPool) s.toolPool = {};
+  if (s.toolPool[key] == null) s.toolPool[key] = 0;
+}
+
 // month revenue totals across ALL accounts (needed for tool apportioning)
 function monthTotals(mode) {
   return compute.monthRevenueTotals(db.get().entries, mode);
@@ -112,6 +144,7 @@ function publicRole(role) {
     canManageUsers: r.canManageUsers,
     canEditSettings: r.canEditSettings,
     canManageTools: r.canManageTools,
+    canManageClients: !!r.canManageClients,
   };
 }
 
@@ -130,7 +163,9 @@ app.get('/api/bootstrap', auth, async (req, res) => {
     // all except Content Creation.
     wings: visibleWings(req.role, s.wings),
     jobTypes: s.jobTypes,
-    tools: s.tools || [],
+    tools: visibleTools(req.role),
+    toolBudgets: s.toolBudgets || {},
+    helpEnabled: groq.isEnabled(s),
     fx: { rate: rate.rate, live: rate.live, at: rate.at },
     toolPool: req.roleDef.canEditSettings ? s.toolPool : undefined,
   });
@@ -142,48 +177,122 @@ app.get('/api/fx', auth, async (req, res) => {
   res.json({ rate: rate.rate, live: rate.live, at: rate.at });
 });
 
-// ---------- accounts ----------
+// ---------- help bot (Groq) ----------
+// Any signed-in user can ask. We pass a compact, role-filtered snapshot so light
+// reporting questions ("what's my YTD GM?") can be answered from real numbers.
+app.post('/api/help', auth, async (req, res) => {
+  const s = settings();
+  if (!groq.isEnabled(s)) {
+    return res.status(400).json({ error: 'Help bot is not set up yet. Super Admin can add a Groq API key under Assumptions → Help bot.' });
+  }
+  const messages = Array.isArray(req.body && req.body.messages) ? req.body.messages : [];
+  if (!messages.length && req.body && req.body.question) {
+    messages.push({ role: 'user', content: String(req.body.question) });
+  }
+  if (!messages.length) return res.status(400).json({ error: 'Ask a question first.' });
+
+  // Build a small snapshot from what this role can see.
+  let snapshot;
+  try {
+    const mode = 'auto';
+    const totals = monthTotals(mode);
+    const visIds = new Set(visibleAccounts(req.role).map((a) => a.id));
+    const rows = db.get().entries.filter((e) => visIds.has(e.accountId)).map((e) =>
+      compute.computeEntry(e, {
+        assumptions: s.assumptions,
+        toolPoolForMonth: (s.toolPool && s.toolPool[e.month]) || 0,
+        totalMonthRevenue: totals[e.month] || 0,
+        mode,
+      }));
+    const sum = (f) => rows.reduce((a, c) => a + (c[f] || 0), 0);
+    const revenue = sum('revenue');
+    const totalCost = sum('totalCost');
+    const grossProfit = revenue - totalCost;
+    snapshot = {
+      role: publicRole(req.role).label,
+      ytd: { revenue, totalCost, grossProfit, gm: revenue > 0 ? grossProfit / revenue : 0 },
+      accountsVisible: visIds.size,
+      months: s.months,
+      assumptions: {
+        srRate: s.assumptions.srRate, midRate: s.assumptions.midRate, jrRate: s.assumptions.jrRate,
+        resourceMonthlyHours: s.assumptions.resourceMonthlyHours,
+        gmMin: s.assumptions.gmMin, gmHealthy: s.assumptions.gmHealthy,
+      },
+    };
+  } catch { snapshot = undefined; }
+
+  try {
+    const reply = await groq.ask(s, messages, snapshot);
+    res.json({ reply });
+  } catch (e) {
+    res.status(502).json({ error: e.message || 'Help bot request failed' });
+  }
+});
+
+// ---------- accounts (clients) ----------
+// A "client" is a name; it can belong to several departments (one account row per
+// department). Any role that can create accounts may ADD a client, but a department
+// is locked to its own department — only Super can move a client between departments
+// or delete/rename it (user, 2026-08-21). The client lands in the shared database
+// and in that department's data at once.
 app.post('/api/accounts', auth, requirePerm('canCreateAccounts'), (req, res) => {
   const { name, wing, budgetGM } = req.body || {};
-  if (!name || !String(name).trim()) return res.status(400).json({ error: 'Account name required' });
-  let finalWing = wing || '';
-  // Departments can only create within a wing they own.
+  if (!name || !String(name).trim()) return res.status(400).json({ error: 'Client name required' });
+  const nm = String(name).trim();
+  let finalWing = String(wing || '');
+  // Departments can only create within a wing they own — they cannot choose another
+  // department for the client.
   if (req.roleDef.wings !== '*') {
-    if (!roleCanSeeWing(req.role, finalWing)) finalWing = req.roleDef.wings[0] || '';
-    // A role with no wings assigned can't own an account anywhere.
     if (!Array.isArray(req.roleDef.wings) || req.roleDef.wings.length === 0) {
-      return res.status(403).json({ error: 'Your role has no wing assigned — ask Super to assign one.' });
+      return res.status(403).json({ error: 'Your role has no department assigned — ask Super Admin.' });
     }
+    if (!roleCanSeeWing(req.role, finalWing)) finalWing = req.roleDef.wings[0];
   }
   const store = db.get();
+  // Idempotent: same client + department already exists → just return it (no dupes).
+  const existing = store.accounts.find(
+    (a) => String(a.name).toLowerCase() === nm.toLowerCase() && (a.wing || '') === finalWing);
+  if (existing) return res.json(existing);
   const acc = {
     id: db.nextId('accounts'),
-    name: String(name).trim(),
+    name: nm,
     wing: finalWing,
     budgetGM: budgetGM != null ? Number(budgetGM) : settings().assumptions.gmHealthy,
-    active: (req.body || {}).active != null ? !!req.body.active : true,
   };
   store.accounts.push(acc);
   db.save().then(() => res.json(acc));
 });
 
-app.put('/api/accounts/:id', auth, requireWrite, (req, res) => {
+// Super only: edit a client (rename, move to another department). Whatever Super
+// changes overwrites the live data everywhere (all views read this one store).
+app.put('/api/accounts/:id', auth, requirePerm('canManageClients'), (req, res) => {
   const id = Number(req.params.id);
   const store = db.get();
   const acc = store.accounts.find((a) => a.id === id);
-  if (!acc) return res.status(404).json({ error: 'Account not found' });
-  if (!canEditAccount(req.role, acc)) return res.status(403).json({ error: 'Not your account' });
-  const { name, wing, budgetGM, active } = req.body || {};
+  if (!acc) return res.status(404).json({ error: 'Client not found' });
+  const { name, wing, budgetGM } = req.body || {};
   if (name != null) acc.name = String(name).trim();
   if (budgetGM != null) acc.budgetGM = Number(budgetGM);
-  if (active != null) acc.active = !!active;
-  // only roles that can see the target wing may move an account into it
-  if (wing != null && roleCanSeeWing(req.role, wing)) acc.wing = wing;
+  if (wing != null) acc.wing = String(wing); // Super may assign the client to any department
   db.save().then(() => res.json(acc));
 });
 
+// Super only: delete a client (a single department-account). Its entries are purged
+// too so no orphaned data lingers.
+app.delete('/api/accounts/:id', auth, requirePerm('canManageClients'), (req, res) => {
+  const id = Number(req.params.id);
+  const store = db.get();
+  const before = store.accounts.length;
+  store.accounts = store.accounts.filter((a) => a.id !== id);
+  if (store.accounts.length === before) return res.status(404).json({ error: 'Client not found' });
+  const entriesBefore = store.entries.length;
+  store.entries = store.entries.filter((e) => e.accountId !== id);
+  db.save().then(() => res.json({ ok: true, id, removedEntries: entriesBefore - store.entries.length }));
+});
+
 // ---------- tools catalog ----------
-// Everyone signed in can view; Super & BizDev (canManageTools) can edit.
+// View: Super sees all; other roles see only their own department's tools.
+// Edit / delete: Super only.
 function nextToolId() {
   const t = settings().tools || [];
   return t.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1;
@@ -193,14 +302,46 @@ function cleanDate(v) {
   const s = String(v).slice(0, 10); // YYYY-MM-DD
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
 }
+// Normalise a { department: cost } split map (used only by common tools) —
+// trims/dedupes department names, coerces to non-negative numbers, drops zeros.
+function cleanDeptCosts(v) {
+  const out = {};
+  if (v && typeof v === 'object') {
+    for (const [dept, val] of Object.entries(v)) {
+      const name = String(dept || '').trim();
+      const cost = Math.max(0, compute.num(val));
+      if (name && cost > 0) out[name] = cost;
+    }
+  }
+  return out;
+}
 function cleanTool(b, base = {}) {
+  const common = b.common != null ? !!b.common : base.common !== undefined ? !!base.common : false;
+  // A common tool is shared by every department; its department label is fixed and
+  // its cost is budgeted per department via `deptCosts` (user, 2026-08-21). The
+  // total monthly `cost` for a common tool is the sum of its per-department split.
+  let department = b.department != null ? String(b.department) : base.department || 'General';
+  const deptCosts = common
+    ? (b.deptCosts != null ? cleanDeptCosts(b.deptCosts) : cleanDeptCosts(base.deptCosts))
+    : {};
+  if (common) department = 'All departments';
+  let cost;
+  if (common) {
+    const sum = Object.values(deptCosts).reduce((s, x) => s + x, 0);
+    // Fall back to any explicit total only when no split was provided.
+    cost = sum > 0 ? sum : (b.cost != null ? compute.num(b.cost) : base.cost || 0);
+  } else {
+    cost = b.cost != null ? compute.num(b.cost) : base.cost || 0;
+  }
   return {
     ...base,
     name: b.name != null ? String(b.name).trim() : base.name || '',
     description: b.description != null ? String(b.description) : base.description || '',
-    cost: b.cost != null ? compute.num(b.cost) : base.cost || 0,
+    cost,
     currency: b.currency === 'INR' ? 'INR' : b.currency === 'USD' ? 'USD' : base.currency || 'USD',
-    department: b.department != null ? String(b.department) : base.department || 'General',
+    common,
+    department,
+    deptCosts,
     why: b.why != null ? String(b.why) : base.why || '',
     startDate: b.startDate != null ? cleanDate(b.startDate) : base.startDate || '',
     stopDate: b.stopDate != null ? cleanDate(b.stopDate) : base.stopDate || '',
@@ -208,8 +349,19 @@ function cleanTool(b, base = {}) {
   };
 }
 
+// Tool visibility (user, 2026-08-21): Super sees everything; every other role sees
+// only its own department's tools (never common tools, which are Super-only). Tools
+// tagged "General" are shared org-wide and stay visible to all.
+function visibleTools(role) {
+  const s = settings();
+  const all = s.tools || [];
+  if (ROLES[role] && ROLES[role].canEditSettings) return all;
+  const wings = visibleWings(role, s.wings);
+  return all.filter((t) => !t.common && (t.department === 'General' || wings.includes(t.department)));
+}
+
 app.get('/api/tools', auth, (req, res) => {
-  res.json(settings().tools || []);
+  res.json(visibleTools(req.role));
 });
 
 app.post('/api/tools', auth, requirePerm('canManageTools'), (req, res) => {
@@ -243,11 +395,11 @@ app.delete('/api/tools/:id', auth, requirePerm('canManageTools'), (req, res) => 
 
 // ---------- associates / team (resources) ----------
 // Everyone signed in sees them (needed to pick resources on an entry).
-// Only settings-capable roles (Super) may add / adjust seniority.
-function normType(t) {
-  return String(t || '').toLowerCase().startsWith('jr') || /junior/i.test(String(t))
-    ? 'Jr. Resource'
-    : 'Sr. Resource';
+// Only settings-capable roles (Super) may add / adjust the category.
+// Each resource carries a `category` (Senior / Middle / Junior) which drives the
+// ₹/hr rate tier; `type` is kept in step for any legacy binary code path.
+function categoryOf(a) {
+  return roster.normCategory(a && (a.category != null ? a.category : a.type));
 }
 
 app.get('/api/associates', auth, (req, res) => {
@@ -258,7 +410,8 @@ app.post('/api/associates', auth, requirePerm('canEditSettings'), (req, res) => 
   const b = req.body || {};
   if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: 'Name required' });
   const store = db.get();
-  const a = { id: db.nextId('associates'), name: String(b.name).trim(), type: normType(b.type) };
+  const category = roster.normCategory(b.category != null ? b.category : b.type);
+  const a = { id: db.nextId('associates'), name: String(b.name).trim(), category, type: roster.typeFromCategory(category) };
   store.associates.push(a);
   db.save().then(() => res.json(a));
 });
@@ -270,7 +423,10 @@ app.put('/api/associates/:id', auth, requirePerm('canEditSettings'), (req, res) 
   if (!a) return res.status(404).json({ error: 'Resource not found' });
   const b = req.body || {};
   if (b.name != null) a.name = String(b.name).trim();
-  if (b.type != null) a.type = normType(b.type);
+  if (b.category != null || b.type != null) {
+    a.category = roster.normCategory(b.category != null ? b.category : b.type);
+    a.type = roster.typeFromCategory(a.category);
+  }
   db.save().then(() => res.json(a));
 });
 
@@ -311,15 +467,23 @@ function emptyEntry(accountId, month) {
     revPlanned: 0,
     revActual: 0,
     srHrs: 0,
+    midHrs: 0,
     jrHrs: 0,
     srHrsPlan: 0,
+    midHrsPlan: 0,
     jrHrsPlan: 0,
     resourcesActual: [], // [{ id, hours }] per named employee
     resourcesPlan: [],
+    // Outsourcing & notes are split Plan vs Actual (user, 2026-08-24). `outsourcing`
+    // / `notes` are kept only as a legacy fallback for entries saved before the split.
     outsourcing: [],
+    outsourcingPlan: [],
+    outsourcingActual: [],
     wcPlanned: 0,
     wcDelivered: 0,
     notes: '',
+    notesPlan: '',
+    notesActual: '',
   };
 }
 
@@ -342,18 +506,25 @@ app.put('/api/entry', auth, requireWrite, (req, res) => {
   const acc = store.accounts.find((a) => a.id === accountId);
   if (!acc) return res.status(404).json({ error: 'Account not found' });
   if (!canEditAccount(req.role, acc)) return res.status(403).json({ error: 'Not your account' });
-  if (!settings().months.includes(month)) return res.status(400).json({ error: 'Unknown month' });
+  if (!validMonthKey(month)) return res.status(400).json({ error: 'Bad month (expected e.g. "Aug-26")' });
+  ensureMonth(month); // extend the catalogue on the fly for any new Month-Year
 
   const assocById = Object.fromEntries((store.associates || []).map((a) => [a.id, a]));
-  const isSenior = (a) => a && !String(a.type || '').toLowerCase().startsWith('jr') && !/junior/i.test(String(a && a.type));
   const cleanResources = (arr) =>
     (Array.isArray(arr) ? arr : [])
       .map((r) => ({ id: Number(r.id), hours: compute.num(r.hours) }))
       .filter((r) => r.id && r.hours > 0);
-  const sumByType = (arr) => {
-    let sr = 0, jr = 0;
-    for (const r of arr) (isSenior(assocById[r.id]) ? (sr += r.hours) : (jr += r.hours));
-    return { sr, jr };
+  // Split booked hours across the three categories (Senior / Middle / Junior) so
+  // each is costed at its own ₹/hr rate tier.
+  const sumByCategory = (arr) => {
+    let sr = 0, mid = 0, jr = 0;
+    for (const r of arr) {
+      const cat = categoryOf(assocById[r.id]);
+      if (cat === 'Senior') sr += r.hours;
+      else if (cat === 'Middle') mid += r.hours;
+      else jr += r.hours;
+    }
+    return { sr, mid, jr };
   };
 
   // Clean + capacity-check the per-person breakdown BEFORE mutating anything, so a
@@ -389,27 +560,33 @@ app.put('/api/entry', auth, requireWrite, (req, res) => {
     entry.id = db.nextId('entries');
     store.entries.push(entry);
   }
-  const numFields = ['revPlanned', 'revActual', 'srHrs', 'jrHrs', 'srHrsPlan', 'jrHrsPlan', 'wcPlanned', 'wcDelivered'];
+  const numFields = ['revPlanned', 'revActual', 'srHrs', 'midHrs', 'jrHrs', 'srHrsPlan', 'midHrsPlan', 'jrHrsPlan', 'wcPlanned', 'wcDelivered'];
   for (const f of numFields) if (b[f] != null) entry[f] = compute.num(b[f]);
 
   // Only apply a breakdown when a non-empty one was sent, so legacy entries that
   // only carry aggregate srHrs/jrHrs are never clobbered by an empty array.
   if (cleanAct) {
     entry.resourcesActual = cleanAct;
-    const t = sumByType(cleanAct);
-    entry.srHrs = t.sr; entry.jrHrs = t.jr;
+    const t = sumByCategory(cleanAct);
+    entry.srHrs = t.sr; entry.midHrs = t.mid; entry.jrHrs = t.jr;
   }
   if (cleanPlan) {
     entry.resourcesPlan = cleanPlan;
-    const t = sumByType(cleanPlan);
-    entry.srHrsPlan = t.sr; entry.jrHrsPlan = t.jr;
+    const t = sumByCategory(cleanPlan);
+    entry.srHrsPlan = t.sr; entry.midHrsPlan = t.mid; entry.jrHrsPlan = t.jr;
   }
-  if (Array.isArray(b.outsourcing)) {
-    entry.outsourcing = b.outsourcing
-      .filter((o) => o && (o.jobType || o.cost))
-      .map((o) => ({ jobType: String(o.jobType || 'Others'), cost: compute.num(o.cost), vendor: String(o.vendor || '') }));
+  // Outsourcing & notes are split Plan vs Actual (user, 2026-08-24). Whichever keys
+  // the client sends are applied; the legacy shared `outsourcing`/`notes` are kept in
+  // step for back-compat so old readers / entries still cost correctly.
+  const cleanOut = (arr) => (Array.isArray(arr) ? arr : [])
+    .filter((o) => o && (o.jobType || o.cost))
+    .map((o) => ({ jobType: String(o.jobType || 'Others'), cost: compute.num(o.cost), vendor: String(o.vendor || '') }));
+  for (const key of ['outsourcing', 'outsourcingPlan', 'outsourcingActual']) {
+    if (Array.isArray(b[key])) entry[key] = cleanOut(b[key]);
   }
-  if (b.notes != null) entry.notes = String(b.notes);
+  for (const key of ['notes', 'notesPlan', 'notesActual']) {
+    if (b[key] != null) entry[key] = String(b[key]);
+  }
   entry.updatedBy = req.role;
   entry.updatedAt = new Date().toISOString();
 
@@ -517,6 +694,33 @@ app.get('/api/dashboard', auth, (req, res) => {
       gmVariance: a.gm - p.gm,
     };
   });
+  // 4b) Plan vs Actual per customer (client name) — aggregate each client's plan and
+  // actual across every department + month it appears in (user, 2026-08-24).
+  const byNamePlan = {};
+  const byNameAct = {};
+  const nameOf = (r) => (r.acc && r.acc.name) || '—';
+  for (const r of planRows) (byNamePlan[nameOf(r)] = byNamePlan[nameOf(r)] || []).push(r);
+  for (const r of actualRows) (byNameAct[nameOf(r)] = byNameAct[nameOf(r)] || []).push(r);
+  const cmpNames = [...new Set([...Object.keys(byNamePlan), ...Object.keys(byNameAct)])];
+  const comparisonByClient = cmpNames.map((name) => {
+    const p = aggregate(byNamePlan[name] || [], s.assumptions);
+    const a = aggregate(byNameAct[name] || [], s.assumptions);
+    const wings = [...new Set((byNamePlan[name] || []).concat(byNameAct[name] || [])
+      .map((r) => r.acc && r.acc.wing).filter(Boolean))];
+    return {
+      name, wings,
+      planRevenue: p.revenue, actualRevenue: a.revenue,
+      planCost: p.totalCost, actualCost: a.totalCost,
+      planGP: p.grossProfit, actualGP: a.grossProfit,
+      planGM: p.gm, actualGM: a.gm,
+      revVariance: a.revenue - p.revenue,
+      gpVariance: a.grossProfit - p.grossProfit,
+      gmVariance: a.gm - p.gm,
+    };
+  })
+    .filter((r) => r.planRevenue || r.actualRevenue)
+    .sort((x, y) => y.actualRevenue - x.actualRevenue);
+
   const cmpPlan = aggregate(planRows, s.assumptions);
   const cmpActual = aggregate(actualRows, s.assumptions);
   const comparisonYtd = {
@@ -529,7 +733,63 @@ app.get('/api/dashboard', auth, (req, res) => {
     gmVariance: cmpActual.gm - cmpPlan.gm,
   };
 
-  res.json({ mode, months: s.months, ytd, monthly, wingSummary, ranking, comparison, comparisonYtd });
+  res.json({ mode, months: s.months, ytd, monthly, wingSummary, ranking, comparison, comparisonByClient, comparisonYtd });
+});
+
+// ---------- drill-down detail (a full breakdown for one month or one client) ----------
+// Powers the "🔍 details" buttons in Reports (user, 2026-08-24). Opens in a new tab
+// (?view=detail&type=…&key=…) and shows every entry, both Plan and Actual, with the
+// resource, outsourcing and notes behind each figure. Role-filtered like everything else.
+app.get('/api/detail', auth, (req, res) => {
+  const s = settings();
+  const store = db.get();
+  const type = req.query.type === 'client' ? 'client' : 'month';
+  const key = String(req.query.key || '');
+  const visIds = new Set(visibleAccounts(req.role).map((a) => a.id));
+  const accById = Object.fromEntries(store.accounts.map((a) => [a.id, a]));
+  const assocById = Object.fromEntries((store.associates || []).map((a) => [a.id, a]));
+
+  const resolveResources = (arr) => (Array.isArray(arr) ? arr : []).map((r) => {
+    const a = assocById[r.id];
+    return { id: r.id, name: a ? a.name : ('#' + r.id), category: a ? categoryOf(a) : '', hours: compute.num(r.hours) };
+  });
+  const detailFor = (e) => {
+    const acc = accById[e.accountId];
+    return {
+      accountId: e.accountId,
+      name: acc ? acc.name : '—',
+      wing: acc ? acc.wing : '',
+      month: e.month,
+      plan: computeFor(e, 'planned'),
+      actual: computeFor(e, 'actual'),
+      resourcesPlan: resolveResources(e.resourcesPlan),
+      resourcesActual: resolveResources(e.resourcesActual),
+      outsourcingPlan: compute.outsourcingArr(e, 'planned'),
+      outsourcingActual: compute.outsourcingArr(e, 'actual'),
+      notesPlan: e.notesPlan || e.notes || '',
+      notesActual: e.notesActual || e.notes || '',
+    };
+  };
+  const sumMode = (items, mode) => {
+    const f = (k) => items.reduce((x, it) => x + (Number(it[mode][k]) || 0), 0);
+    const revenue = f('revenue'), totalCost = f('totalCost');
+    return {
+      revenue, manpower: f('manpower'), outsourcing: f('outsourcing'), toolShare: f('toolShare'),
+      totalCost, grossProfit: revenue - totalCost, gm: revenue > 0 ? (revenue - totalCost) / revenue : 0,
+    };
+  };
+
+  let items;
+  if (type === 'month') {
+    items = store.entries.filter((e) => visIds.has(e.accountId) && e.month === key).map(detailFor);
+    items.sort((a, b) => String(a.wing).localeCompare(String(b.wing)) || String(a.name).localeCompare(String(b.name)));
+  } else {
+    items = store.entries
+      .filter((e) => visIds.has(e.accountId) && accById[e.accountId] && String(accById[e.accountId].name).toLowerCase() === key.toLowerCase())
+      .map(detailFor);
+    items.sort((a, b) => monthOrder(a.month) - monthOrder(b.month) || String(a.wing).localeCompare(String(b.wing)));
+  }
+  res.json({ type, key, planTotals: sumMode(items, 'plan'), actualTotals: sumMode(items, 'actual'), items });
 });
 
 function aggregate(rows, a) {
@@ -538,7 +798,6 @@ function aggregate(rows, a) {
   const manpower = sum('manpower');
   const outsourcing = sum('outsourcing');
   const toolShare = sum('toolShare');
-  const contingency = sum('contingency');
   const totalCost = sum('totalCost');
   const grossProfit = revenue - totalCost;
   const gm = revenue > 0 ? grossProfit / revenue : 0;
@@ -550,7 +809,7 @@ function aggregate(rows, a) {
     else if (r.c.status === 'atrisk') atrisk++;
   }
   return {
-    revenue, manpower, outsourcing, toolShare, contingency, totalCost, grossProfit, gm,
+    revenue, manpower, outsourcing, toolShare, totalCost, grossProfit, gm,
     status: compute.statusOf(gm, revenue > 0, a),
     activeAccounts: activeAccts.size,
     healthy, review, atrisk,
@@ -565,11 +824,26 @@ app.get('/api/settings', auth, requirePerm('canEditSettings'), (req, res) => {
 app.put('/api/settings/assumptions', auth, requirePerm('canEditSettings'), (req, res) => {
   const s = settings();
   const b = req.body || {};
-  for (const k of ['srRate', 'jrRate', 'srCapacity', 'jrCapacity', 'resourceMonthlyHours', 'contingency', 'gmMin', 'gmHealthy']) {
+  for (const k of ['srRate', 'midRate', 'jrRate', 'srCapacity', 'jrCapacity', 'resourceMonthlyHours', 'gmMin', 'gmHealthy']) {
     if (b[k] != null) s.assumptions[k] = compute.num(b[k]);
   }
   if (b.fy != null) s.assumptions.fy = String(b.fy);
   db.save().then(() => res.json(s.assumptions));
+});
+
+// Super-only: monthly tool budget allocated to each department. The whole map is
+// replaced in one call ({ department: monthlyBudgetINR }).
+app.put('/api/settings/toolbudgets', auth, requirePerm('canEditSettings'), (req, res) => {
+  const s = settings();
+  const b = (req.body && req.body.budgets) || req.body || {};
+  const out = {};
+  for (const [dept, val] of Object.entries(b)) {
+    const name = String(dept || '').trim();
+    if (!name) continue;
+    out[name] = Math.max(0, compute.num(val));
+  }
+  s.toolBudgets = out;
+  db.save().then(() => res.json(s.toolBudgets));
 });
 
 app.put('/api/settings/toolpool', auth, requirePerm('canEditSettings'), (req, res) => {
@@ -598,6 +872,36 @@ app.put('/api/settings/jobtypes', auth, requirePerm('canEditSettings'), (req, re
   if (!list.length) return res.status(400).json({ error: 'Keep at least one outsourcing option' });
   s.jobTypes = list;
   db.save().then(() => res.json(s.jobTypes));
+});
+
+// Super-only: configure the Groq help bot. Returns only whether a key is set
+// (never echoes the key back to the client).
+app.get('/api/settings/help', auth, requirePerm('canEditSettings'), (req, res) => {
+  const s = settings();
+  res.json({
+    hasKey: !!(s.groqApiKey || process.env.GROQ_API_KEY),
+    envKey: !!process.env.GROQ_API_KEY,
+    model: s.groqModel || groq.DEFAULT_MODEL,
+  });
+});
+app.put('/api/settings/help', auth, requirePerm('canEditSettings'), (req, res) => {
+  const s = settings();
+  const b = req.body || {};
+  // Empty string clears the stored key; a non-empty string sets it. `undefined`
+  // (field omitted) leaves it untouched.
+  if (b.apiKey !== undefined) {
+    const v = String(b.apiKey || '').trim();
+    if (v) s.groqApiKey = v; else delete s.groqApiKey;
+  }
+  if (b.model !== undefined) {
+    const v = String(b.model || '').trim();
+    if (v) s.groqModel = v; else delete s.groqModel;
+  }
+  db.save().then(() => res.json({
+    hasKey: !!(s.groqApiKey || process.env.GROQ_API_KEY),
+    envKey: !!process.env.GROQ_API_KEY,
+    model: s.groqModel || groq.DEFAULT_MODEL,
+  }));
 });
 
 app.put('/api/settings/password', auth, requirePerm('canManageUsers'), (req, res) => {
@@ -670,26 +974,83 @@ function migrate() {
     s.assumptions.resourceMonthlyHours = 180; dirty = true;
   }
 
-  // 6) switch the team roster from names to emails (user, 2026-08-17): convert any
-  // legacy name-based associate to a placeholder email in place (keeps ids so
-  // existing entries still resolve). Safe to run repeatedly — no-ops once emailed.
-  const emailed = roster.emailizeAssociates(store);
-  if (emailed) {
+  // 6) team roster is email-based (user, 2026-08-17). A datastore seeded before the
+  // roster parser understood the current "emp details.txt" layout ends up with
+  // garbage placeholder emails (jw101@…). Rebuild it once from the file so every
+  // resource carries its real email + inferred seniority, then fall back to the
+  // additive sync on later starts so in-app edits survive.
+  if (!store.meta) store.meta = {};
+  if (!store.meta.rosterEmailV2) {
+    roster.emailizeAssociates(store); // fix any legacy name-only rows first
+    const n = roster.rebuildAssociatesFromRoster(store);
+    store.meta.rosterEmailV2 = true;
     dirty = true;
-    console.log(`  + converted ${emailed} team member(s) from name → placeholder email`);
+    if (n) console.log(`  ✓ rebuilt team roster from "emp details.txt" (${n} resources, real emails)`);
+  } else {
+    const added = roster.syncRosterIntoStore(store);
+    if (added) {
+      dirty = true;
+      console.log(`  + added ${added} resource(s) from "emp details.txt"`);
+    }
   }
 
-  // 7) sync the team roster from `emp details.txt` (adds new hires; never wipes)
-  const added = roster.syncRosterIntoStore(store);
-  if (added) {
+  // 7) per-department monthly tool budgets (super-only allocation)
+  if (!s.toolBudgets || typeof s.toolBudgets !== 'object') { s.toolBudgets = {}; dirty = true; }
+
+  // 8) tools carry a "common" flag (shared across all departments) and, for common
+  // tools, a per-department cost split (`deptCosts`).
+  for (const t of (s.tools || [])) {
+    if (t.common === undefined) { t.common = false; dirty = true; }
+    if (t.deptCosts === undefined) { t.deptCosts = {}; dirty = true; }
+  }
+
+  // 9) three employee categories (user, 2026-08-21). Add a Middle ₹/hr rate tier
+  // (default = midway between Senior & Junior) and stamp every resource with its
+  // category from "emp categories.txt" (falls back to one inferred from its type).
+  if (s.assumptions && s.assumptions.midRate == null) {
+    const sr = compute.num(s.assumptions.srRate);
+    const jr = compute.num(s.assumptions.jrRate);
+    s.assumptions.midRate = sr && jr ? Math.round((sr + jr) / 2) : 950;
     dirty = true;
-    console.log(`  + added ${added} resource(s) from "emp details.txt"`);
+    console.log(`  ✓ added Middle rate tier (₹${s.assumptions.midRate}/hr) — edit in Assumptions`);
+  }
+  // First run: the file is authoritative for every resource. Afterwards only fill
+  // in resources that still have no category, so in-app "Manage team" edits stick.
+  let catChanged;
+  if (!store.meta.categoriesV1) {
+    catChanged = roster.applyCategoriesToStore(store);
+    store.meta.categoriesV1 = true;
+    dirty = true;
+    console.log(`  ✓ applied employee categories to ${catChanged} resource(s) from "emp categories.txt"`);
+  } else {
+    catChanged = roster.applyCategoriesToStore(store, { onlyMissing: true });
+    if (catChanged) { dirty = true; console.log(`  + set category on ${catChanged} new resource(s)`); }
+  }
+
+  // 10) merge the client list from "clients.txt" (Book1) into accounts, additively.
+  const clientsAdded = clients.syncClientsIntoStore(store);
+  if (clientsAdded) {
+    dirty = true;
+    console.log(`  + added ${clientsAdded} client(s) from "clients.txt"`);
   }
 
   if (dirty) db.save().then(() => console.log('  ✓ datastore migrated to current schema'));
 }
-migrate();
 
-app.listen(PORT, () => {
-  console.log(`\nJW BNGM Tracker running →  http://localhost:${PORT}\n`);
-});
+// Connect to MySQL and load the store BEFORE serving any request, then run the
+// idempotent schema migration and start listening.
+db.init()
+  .then(() => {
+    migrate();
+    app.listen(PORT, () => {
+      console.log(`\nJW BNGM Tracker running →  http://localhost:${PORT}\n`);
+    });
+  })
+  .catch((err) => {
+    const cfg = db.dbConfig();
+    console.error('\n✖ Could not connect to the MySQL database.');
+    console.error(`  Tried ${cfg.user}@${cfg.host}:${cfg.port}/${cfg.database}`);
+    console.error('  Check your DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME (.env or environment).');
+    console.error(`  ${err.code || ''} ${err.message}\n`);
+    process.exit(1);
+  });

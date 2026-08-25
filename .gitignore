@@ -1,7 +1,20 @@
 node_modules/
 data/db.json*
 *.tmp
-seed-data.json
+
+# secrets — never commit real credentials
+.env
+
+# process manager logs
+logs/
+*.log
 
 # raw source workbook holds the same financial data we already keep out of git
 *.xlsx
+
+# internal financial / employee data — keep out of the public repo.
+# Provide these on the server (e.g. Render Secret Files) instead, then run `npm run seed`.
+seed-data.json
+clients.txt
+emp categories.txt
+emp details.txt

@@ -110,6 +110,8 @@ function logout() {
   state.token = null; localStorage.removeItem('bngm_token');
   $('#app').classList.add('hidden'); $('#login').classList.remove('hidden');
   $('#loginPassword').value = '';
+  const fab = $('#helpFab'); if (fab) fab.classList.add('hidden');
+  const hp = $('#helpPanel'); if (hp) hp.classList.add('hidden');
 }
 $('#logoutBtn').addEventListener('click', logout);
 
@@ -121,6 +123,7 @@ async function startApp() {
   $('#fyBadge').textContent = state.boot.assumptions.fy || '';
   renderFx();
   initUsdToggle();
+  updateHelpFab();
   $$('.settings-only').forEach((e) => e.classList.toggle('hidden', !state.roleInfo.canEditSettings));
   $('#addToolBtn').classList.toggle('hidden', !state.roleInfo.canManageTools);
 
@@ -129,6 +132,10 @@ async function startApp() {
   const ro = !!state.roleInfo.readOnly;
   $$('#tabs .tab[data-view="entry"]').forEach((t) => t.classList.toggle('hidden', ro));
   $('#addAccountBtn').classList.toggle('hidden', ro || !state.roleInfo.canCreateAccounts);
+
+  // Opened as a detail tab (?view=detail…)? Show that breakdown instead of the normal
+  // landing view — the drill-down works for every role that can see the data.
+  if (maybeOpenDetail()) return;
   if (ro) { switchView('dashboard'); return; }
 
   switchView('entry');
@@ -140,6 +147,9 @@ $('#tabs').addEventListener('click', (e) => {
   const btn = e.target.closest('.tab'); if (!btn) return;
   switchView(btn.dataset.view);
 });
+const _detailBack = $('#detailBack');
+if (_detailBack) _detailBack.addEventListener('click', () => switchView('dashboard'));
+
 function switchView(view) {
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === view));
   $$('.view').forEach((v) => v.classList.add('hidden'));
@@ -154,45 +164,182 @@ function switchView(view) {
 // ================= ENTRY (single-screen form) =================
 // Flow: pick client → Planned/Actual → fill everything on one screen. All fields
 // stay editable (fix mistakes any time); pick an existing client+month to edit it.
-const entry = { accountId: null, month: null, mode: 'actual', data: null };
+const entry = { accountId: null, clientName: null, month: null, mode: 'actual', data: null };
+
+// ---- dynamic month keys (user, 2026-08-21) ----
+// Entry date is now a free Year + Month pick, combined into a "Mon-YY" key. Any
+// new Month-Year the user picks is created on the server on save.
+const MONTHS3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const MONTHS_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+function monthKey(monIdx, year) { return `${MONTHS3[monIdx]}-${String(year).slice(2)}`; }
+function parseMonthKey(key) {
+  const m = /^([A-Za-z]{3})-(\d{2})$/.exec(String(key || ''));
+  if (!m) return null;
+  const i = MONTHS3.indexOf(m[1][0].toUpperCase() + m[1].slice(1, 3).toLowerCase());
+  if (i < 0) return null;
+  return { monIdx: i, year: 2000 + Number(m[2]) };
+}
+// Unique client names → their accounts (one per service/department wing).
+function clientGroups() {
+  const map = new Map();
+  for (const a of activeAccounts()) {
+    if (!map.has(a.name)) map.set(a.name, []);
+    map.get(a.name).push(a);
+  }
+  return map;
+}
+function yearRange() {
+  const now = new Date().getFullYear();
+  const ys = new Set();
+  for (const m of (state.boot.months || [])) { const p = parseMonthKey(m); if (p) ys.add(p.year); }
+  for (let y = now - 1; y <= now + 2; y++) ys.add(y);
+  return [...ys].sort((a, b) => a - b);
+}
 
 const F = () => entry.mode === 'planned'
-  ? { rev: 'revPlanned', wc: 'wcPlanned', res: 'resourcesPlan' }
-  : { rev: 'revActual', wc: 'wcDelivered', res: 'resourcesActual' };
+  ? { rev: 'revPlanned', wc: 'wcPlanned', res: 'resourcesPlan', out: 'outsourcingPlan', notes: 'notesPlan' }
+  : { rev: 'revActual', wc: 'wcDelivered', res: 'resourcesActual', out: 'outsourcingActual', notes: 'notesActual' };
 
-function isSenior(assoc) {
-  return assoc && !String(assoc.type || '').toLowerCase().startsWith('jr') && !/junior/i.test(String(assoc && assoc.type));
+// Three employee categories (user, 2026-08-21): Senior / Middle / Junior — each
+// drives its own ₹/hr rate tier.
+const CATEGORIES = ['Senior', 'Middle', 'Junior'];
+function categoryOf(assoc) {
+  const raw = String((assoc && (assoc.category != null ? assoc.category : assoc.type)) || '').toLowerCase();
+  if (raw.startsWith('sen') || raw.startsWith('sr')) return 'Senior';
+  if (raw.startsWith('jun') || raw.startsWith('jr')) return 'Junior';
+  if (raw.startsWith('mid')) return 'Middle';
+  return 'Middle';
 }
+function rateFor(assoc) {
+  const a = state.boot.assumptions;
+  const cat = categoryOf(assoc);
+  if (cat === 'Senior') return Number(a.srRate) || 0;
+  if (cat === 'Junior') return Number(a.jrRate) || 0;
+  return a.midRate != null ? Number(a.midRate) : Math.round(((Number(a.srRate) || 0) + (Number(a.jrRate) || 0)) / 2);
+}
+function isSenior(assoc) { return categoryOf(assoc) === 'Senior'; }
+// Small coloured pill for a resource's category, with its ₹/hr rate in the title.
+// Seniority is backend-only for everyone except Super Admin — regular users must not
+// see the Senior / Middle / Junior tags (user, 2026-08-24).
+function catTag(assoc) {
+  if (!isSuper()) return '';
+  const cat = categoryOf(assoc);
+  return `<span class="cat-tag cat-${cat.toLowerCase()}" title="${cat} · ₹${rateFor(assoc)}/hr">${cat}</span>`;
+}
+// All clients visible to this role (the "active/inactive" flag was removed — user 2026-08-21).
 function activeAccounts() {
-  return (state.boot.accounts || []).filter((a) => a.active !== false);
+  return state.boot.accounts || [];
 }
-function currentMonthLabel() {
-  const d = new Date();
-  const mon = d.toLocaleString('en-US', { month: 'short' });
-  const yy = String(d.getFullYear()).slice(2);
-  const label = `${mon}-${yy}`;
-  return (state.boot.months || []).includes(label) ? label : (state.boot.months || [])[0];
+function isSuper() { return !!state.roleInfo.canManageClients; }
+function entryHint() {
+  $('#entryBody').innerHTML = '<p class="muted entry-hint">Pick a client, service, year and month above to begin — then everything is one screen.</p>';
+  renderPreview();
 }
 
 function startEntry() {
-  const accs = activeAccounts();
+  const groups = clientGroups();
+  const names = [...groups.keys()].sort((a, b) => a.localeCompare(b));
   const clientSel = $('#e_client');
+  // Client picker shows client NAMES only — no department (user, 2026-08-21).
   clientSel.innerHTML = '<option value="">— select client —</option>' +
-    accs.map((a) => `<option value="${a.id}">${esc(a.name)}${a.wing ? ' · ' + esc(a.wing) : ''}</option>`).join('');
-  if (entry.accountId && accs.some((a) => a.id === entry.accountId)) clientSel.value = String(entry.accountId);
+    names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+  if (entry.clientName && groups.has(entry.clientName)) clientSel.value = entry.clientName;
+  else { entry.clientName = null; entry.accountId = null; }
 
-  const monthSel = $('#e_month');
-  monthSel.innerHTML = (state.boot.months || []).map((m) => `<option value="${m}">${m}</option>`).join('');
-  entry.month = entry.month || currentMonthLabel();
-  monthSel.value = entry.month;
-
+  fillServiceSelect();
+  fillDateSelects();
   setModeButtons();
-  clientSel.onchange = () => { entry.accountId = Number(clientSel.value) || null; loadEntry(); };
-  monthSel.onchange = () => { entry.month = monthSel.value; loadEntry(); };
-  $$('#e_mode button').forEach((b) => (b.onclick = () => { entry.mode = b.dataset.mode; setModeButtons(); loadEntry(); }));
 
-  if (entry.accountId) loadEntry();
-  else { $('#entryBody').innerHTML = '<p class="muted entry-hint">Pick a client above to begin — then everything is one screen.</p>'; renderPreview(); }
+  clientSel.onchange = () => {
+    entry.clientName = clientSel.value || null;
+    entry.accountId = null;
+    fillServiceSelect();
+    afterHeadChange();
+  };
+  $('#e_service').onchange = () => onServiceChange();
+  $('#e_year').onchange = () => { rebuildMonth(); afterHeadChange(); };
+  $('#e_monthName').onchange = () => { rebuildMonth(); afterHeadChange(); };
+  $$('#e_mode button').forEach((b) => (b.onclick = () => { entry.mode = b.dataset.mode; setModeButtons(); afterHeadChange(); }));
+
+  afterHeadChange();
+}
+
+// Populate the Service / Department select from the chosen client.
+//  • Super sees EVERY department: existing ones select their account, missing ones
+//    carry a "new:<wing>" sentinel that creates the account on selection.
+//  • Department roles see only the department(s) that client is in (their own).
+function fillServiceSelect() {
+  const sel = $('#e_service');
+  if (!entry.clientName) { sel.innerHTML = '<option value="">—</option>'; sel.disabled = true; entry.accountId = null; return; }
+  const accs = clientGroups().get(entry.clientName) || [];
+  const byWing = {};
+  accs.forEach((a) => { byWing[a.wing || ''] = a; });
+  sel.disabled = false;
+
+  // "Unassigned" (empty-wing) accounts are no longer offered here (user, 2026-08-24) —
+  // an entry is always logged against a real department. Super sees every department
+  // (existing ones select the account, missing ones carry a "new:<wing>" add sentinel).
+  const opts = [];
+  if (isSuper()) {
+    (state.boot.wings || []).forEach((w) => {
+      if (byWing[w]) opts.push(`<option value="${byWing[w].id}">${esc(w)}</option>`);
+      else opts.push(`<option value="new:${esc(w)}">${esc(w)} — add</option>`);
+    });
+  } else {
+    accs.filter((a) => a.wing).forEach((a) => opts.push(`<option value="${a.id}">${esc(a.wing)}</option>`));
+    if (!opts.length) opts.push('<option value="">—</option>');
+  }
+  sel.innerHTML = opts.join('');
+
+  // Only auto-select accounts that actually have a department row rendered above.
+  const pickable = isSuper() ? accs.filter((a) => a.wing) : accs.filter((a) => a.wing);
+  if (entry.accountId && pickable.some((a) => a.id === entry.accountId)) sel.value = String(entry.accountId);
+  else if (pickable.length) { entry.accountId = pickable[0].id; sel.value = String(pickable[0].id); }
+  else { entry.accountId = null; if (sel.options[0]) sel.value = sel.options[0].value; }
+}
+
+// Handle a service pick — including the Super-only "add this department" sentinel,
+// which creates the (client, department) account before loading the entry.
+async function onServiceChange() {
+  const v = $('#e_service').value;
+  if (v && v.startsWith('new:')) {
+    const wing = v.slice(4);
+    try {
+      const acc = await api('/accounts', { method: 'POST', body: JSON.stringify({ name: entry.clientName, wing }) });
+      state.boot = await api('/bootstrap'); // pick up the new account everywhere
+      entry.accountId = acc.id;
+      fillServiceSelect();
+      toast(`${entry.clientName} added to ${wing}`);
+    } catch (e) { toast(e.message); return; }
+  } else {
+    entry.accountId = Number(v) || null;
+  }
+  afterHeadChange();
+}
+
+function fillDateSelects() {
+  const yearSel = $('#e_year');
+  const monSel = $('#e_monthName');
+  const years = yearRange();
+  yearSel.innerHTML = years.map((y) => `<option value="${y}">${y}</option>`).join('');
+  monSel.innerHTML = MONTHS_FULL.map((m, i) => `<option value="${i}">${m}</option>`).join('');
+  const now = new Date();
+  let cur = parseMonthKey(entry.month) || { monIdx: now.getMonth(), year: now.getFullYear() };
+  if (!years.includes(cur.year)) cur.year = years.includes(now.getFullYear()) ? now.getFullYear() : years[years.length - 1];
+  yearSel.value = String(cur.year);
+  monSel.value = String(cur.monIdx);
+  entry.month = monthKey(cur.monIdx, cur.year);
+}
+
+function rebuildMonth() {
+  const y = Number($('#e_year').value);
+  const mi = Number($('#e_monthName').value);
+  entry.month = monthKey(mi, y);
+}
+
+function afterHeadChange() {
+  if (entry.accountId && entry.month) loadEntry();
+  else entryHint();
 }
 
 function setModeButtons() {
@@ -205,10 +352,24 @@ async function loadEntry() {
   entry.data = r.entry;
   entry.capacity = r.capacity || 180;
   entry.usageOther = r.usageOther || {}; // hours booked on OTHER clients this month, per resource id
-  entry.data.resourcesActual = Array.isArray(entry.data.resourcesActual) ? entry.data.resourcesActual : [];
-  entry.data.resourcesPlan = Array.isArray(entry.data.resourcesPlan) ? entry.data.resourcesPlan : [];
-  entry.data.outsourcing = Array.isArray(entry.data.outsourcing) ? entry.data.outsourcing : [];
+  normalizeEntryData(entry.data);
   renderEntryBody();
+}
+
+// Fill in any missing arrays / split fields on a loaded or just-saved entry.
+// Outsourcing & notes are split Plan vs Actual (user, 2026-08-24); each mode's field
+// is seeded from the legacy shared field so pre-split entries stay editable and their
+// planned outsourcing / notes still surface in the Actual reference block.
+function normalizeEntryData(d) {
+  d.resourcesActual = Array.isArray(d.resourcesActual) ? d.resourcesActual : [];
+  d.resourcesPlan = Array.isArray(d.resourcesPlan) ? d.resourcesPlan : [];
+  const legacyOut = Array.isArray(d.outsourcing) ? d.outsourcing : [];
+  d.outsourcing = legacyOut;
+  d.outsourcingPlan = Array.isArray(d.outsourcingPlan) ? d.outsourcingPlan : legacyOut.slice();
+  d.outsourcingActual = Array.isArray(d.outsourcingActual) ? d.outsourcingActual : legacyOut.slice();
+  const legacyNotes = d.notes || '';
+  d.notesPlan = d.notesPlan != null ? d.notesPlan : legacyNotes;
+  d.notesActual = d.notesActual != null ? d.notesActual : legacyNotes;
 }
 
 // "X of 180 hrs free" label for a resource, given hours used on other clients and
@@ -230,6 +391,57 @@ function setRes(id, hours) {
 }
 function assocById(id) { return (state.boot.associates || []).find((a) => a.id === Number(id)); }
 
+// Planned hours booked for a resource (reference shown while filling Actuals).
+function plannedHoursFor(id) {
+  const r = (entry.data.resourcesPlan || []).find((x) => Number(x.id) === Number(id));
+  return r ? Number(r.hours) || 0 : 0;
+}
+// Asana report URL for a resource — we identify people by email, which Asana search
+// resolves to their tasks/assignments.
+function asanaUrl(email) {
+  return 'https://app.asana.com/0/search?q=' + encodeURIComponent(String(email || ''));
+}
+function openAsana(id) {
+  const a = assocById(id);
+  const email = a ? a.name : '';
+  if (!email) { toast('No email for this resource'); return; }
+  window.open(asanaUrl(email), '_blank', 'noopener');
+}
+
+// Planned-vs-actual reference block: while filling ACTUALS, show what was planned
+// for this same client + month (user, 2026-08-21).
+function plannedRefBlock() {
+  if (entry.mode !== 'actual') return '';
+  const d = entry.data;
+  const planRev = Number(d.revPlanned) || 0;
+  const planRes = d.resourcesPlan || [];
+  const planOut = d.outsourcingPlan || [];
+  const planNotes = (d.notesPlan || '').trim();
+  if (!planRev && !planRes.length && !planOut.length && !planNotes) return '';
+  const resLines = planRes.length
+    ? planRes.map((r) => {
+      const a = assocById(r.id);
+      const nm = a ? a.name : ('#' + r.id);
+      return `<div class="pr-line"><span>${esc(nm)}${a ? ' ' + catTag(a) : ''}</span><span class="val">${r.hours} hr planned</span></div>`;
+    }).join('')
+    : '<div class="muted small">No resources were planned.</div>';
+  const outBlock = planOut.length ? `
+    <div class="pr-sub">Planned outsourcing</div>
+    ${planOut.map((o) => `<div class="pr-line"><span>${esc(o.jobType || 'Others')}</span><span class="val">${inr(o.cost)}</span></div>`).join('')}` : '';
+  const notesBlock = planNotes ? `
+    <div class="pr-sub">Planned notes</div>
+    <div class="pr-line"><span class="pr-notes">${esc(planNotes)}</span></div>` : '';
+  return `<div class="planned-ref">
+    <div class="pr-head">📋 Planned reference — what you budgeted for this client &amp; month</div>
+    <div class="pr-line"><span>Planned revenue</span><span class="val">${inr(planRev)}</span></div>
+    <div class="pr-sub">Planned resources &amp; expected hours</div>
+    ${resLines}
+    ${outBlock}
+    ${notesBlock}
+    <p class="muted small" style="margin:8px 0 0">These are your plan figures — now enter the <b>actual</b> hours each person really did below.</p>
+  </div>`;
+}
+
 // Render the resources the user has picked (booked or just added) as hour rows.
 // The full member list is intentionally NOT shown — resources are added by
 // searching an email above.
@@ -243,6 +455,7 @@ function renderResRows() {
     cont.innerHTML = '<p class="muted small">No resources added yet — search an email above to add one.</p>';
     return;
   }
+  const showPlan = entry.mode === 'actual';
   cont.innerHTML = ids.map((id) => {
     const a = assocById(id);
     const email = a ? a.name : ('#' + id);
@@ -250,12 +463,15 @@ function renderResRows() {
     const cur = resHours(id) || 0;
     const maxForThis = Math.max(0, cap - used);
     const full = cap - used - cur <= 0;
+    const ph = showPlan ? plannedHoursFor(id) : 0;
+    const planTag = showPlan && ph ? `<span class="res-plan" title="Hours expected during planning">expected ${ph} hr</span>` : '';
     return `
     <label class="res-row ${full ? 'res-full' : ''}" data-id="${id}">
-      <span class="res-name">${esc(email)}${a ? '' : ' <span class="muted small">(removed)</span>'}</span>
+      <span class="res-name">${esc(email)}${a ? ' ' + catTag(a) : ' <span class="muted small">(removed)</span>'}${planTag}</span>
       <input type="number" min="0" max="${maxForThis}" step="1" class="res-hrs" data-id="${id}"
-             value="${cur || ''}" placeholder="0 hrs" />
+             value="${cur || ''}" placeholder="${showPlan && ph ? ph + ' hrs?' : '0 hrs'}" />
       <span class="res-avail muted">${availLabel(used, cur, cap)}</span>
+      <button type="button" class="btn btn-sm btn-ghost res-asana" data-id="${id}" title="Open Asana report for ${esc(email)}">📋 Asana</button>
       <button type="button" class="btn btn-sm btn-danger res-del" data-id="${id}" title="Remove">✕</button>
     </label>`;
   }).join('');
@@ -275,6 +491,7 @@ function renderResRows() {
     if (row) row.classList.toggle('res-full', cap2 - used - v <= 0);
     renderPreview();
   }));
+  $$('.res-asana', cont).forEach((b) => (b.onclick = (ev) => { ev.preventDefault(); openAsana(Number(b.dataset.id)); }));
   $$('.res-del', cont).forEach((b) => (b.onclick = () => {
     const id = Number(b.dataset.id);
     setRes(id, 0);
@@ -303,7 +520,7 @@ function wireResSearch() {
       return;
     }
     box.innerHTML = matches.map((a) =>
-      `<div class="res-match" data-id="${a.id}">${esc(a.name)}<span class="muted small"> · ${isSenior(a) ? 'Senior' : 'Junior'}</span></div>`).join('');
+      `<div class="res-match" data-id="${a.id}">${esc(a.name)} ${catTag(a)}</div>`).join('');
     box.classList.remove('hidden');
     $$('.res-match[data-id]', box).forEach((m) => (m.onclick = () => {
       const id = Number(m.dataset.id);
@@ -323,11 +540,17 @@ function renderEntryBody() {
   const exists = !!entry.data.id;
   const cap = entry.capacity || 180;
   // Which resources are shown as rows right now = the ones already booked plus any
-  // the user has just picked from the email search (even before typing hours).
+  // the user has just picked from the email search (even before typing hours). While
+  // filling Actuals, also surface everyone who was in the plan so their real hours
+  // can be entered against the expected ones (user, 2026-08-21).
   entry.picked = new Set((resArr() || []).map((r) => Number(r.id)));
+  if (entry.mode === 'actual') {
+    for (const r of (entry.data.resourcesPlan || [])) entry.picked.add(Number(r.id));
+  }
 
   const body = `
     ${exists ? `<div class="entry-flag">✎ Editing existing ${entry.mode} numbers — adjust anything and save.</div>` : ''}
+    ${plannedRefBlock()}
 
     <div class="entry-field">
       <label class="ef-label">Revenue (₹) — ${entry.mode === 'planned' ? 'planned / budget' : 'actual billed'}</label>
@@ -338,7 +561,7 @@ function renderEntryBody() {
     <div class="entry-field">
       <div class="ef-head">
         <label class="ef-label">Resources (${entry.mode} hours)</label>
-        ${canManageTeam ? `<button type="button" id="e_manageTeam" class="btn btn-sm btn-ghost" title="Add or adjust who is senior / junior">⚙ Manage team</button>` : ''}
+        ${canManageTeam ? `<button type="button" id="e_manageTeam" class="btn btn-sm btn-ghost" title="Add or adjust each resource's category (Senior / Middle / Junior)">⚙ Manage team</button>` : ''}
       </div>
       ${legacyHoursNote()}
       <div class="res-add">
@@ -350,7 +573,7 @@ function renderEntryBody() {
     </div>
 
     <div class="entry-field">
-      <label class="ef-label">Outsourcing / freelance costs</label>
+      <label class="ef-label">Outsourcing / freelance costs — ${entry.mode === 'planned' ? 'planned / budget' : 'actual'}</label>
       <div id="e_outList"></div>
       <div class="out-add">
         <select id="e_outType">${(state.boot.jobTypes || ['Others']).map((j) => `<option value="${esc(j)}">${esc(j)}</option>`).join('')}</select>
@@ -366,8 +589,8 @@ function renderEntryBody() {
     </div>` : ''}
 
     <div class="entry-field">
-      <label class="ef-label">Notes (optional)</label>
-      <input id="e_notes" value="${esc(entry.data.notes || '')}" placeholder="Anything worth remembering…" />
+      <label class="ef-label">Notes (optional) — ${entry.mode === 'planned' ? 'planned' : 'actual'}</label>
+      <input id="e_notes" value="${esc(entry.data[f.notes] || '')}" placeholder="Anything worth remembering…" />
     </div>
 
     <div class="entry-actions">
@@ -393,13 +616,14 @@ function renderEntryBody() {
   $('#e_outAdd').onclick = () => {
     const cost = Number($('#e_outCost').value) || 0;
     if (!cost) return;
-    entry.data.outsourcing.push({ jobType: $('#e_outType').value, cost, vendor: '' });
+    const arr = entry.data[f.out] || (entry.data[f.out] = []);
+    arr.push({ jobType: $('#e_outType').value, cost, vendor: '' });
     $('#e_outCost').value = '';
     renderOutsourcing(); renderPreview();
   };
 
   const wc = $('#e_wc'); if (wc) wc.oninput = () => { entry.data[f.wc] = Number(wc.value) || 0; };
-  $('#e_notes').oninput = () => { entry.data.notes = $('#e_notes').value; };
+  $('#e_notes').oninput = () => { entry.data[f.notes] = $('#e_notes').value; };
   $('#e_save').onclick = saveEntry;
 
   renderPreview();
@@ -408,17 +632,24 @@ function renderEntryBody() {
 // Legacy entries carry aggregate sr/jr hours with no per-person breakdown.
 function legacyHoursNote() {
   const d = entry.data;
-  const sr = entry.mode === 'planned' ? d.srHrsPlan : d.srHrs;
-  const jr = entry.mode === 'planned' ? d.jrHrsPlan : d.jrHrs;
+  const plan = entry.mode === 'planned';
+  const sr = (plan ? d.srHrsPlan : d.srHrs) || 0;
+  const mid = (plan ? d.midHrsPlan : d.midHrs) || 0;
+  const jr = (plan ? d.jrHrsPlan : d.jrHrs) || 0;
   const hasBreakdown = (d[F().res] || []).length > 0;
-  if (hasBreakdown || (!sr && !jr)) return '';
+  if (hasBreakdown || (!sr && !mid && !jr)) return '';
+  const parts = [];
+  if (sr) parts.push(`${sr} senior`);
+  if (mid) parts.push(`${mid} middle`);
+  if (jr) parts.push(`${jr} junior`);
   return `<div class="entry-flag" style="background:color-mix(in srgb,var(--amber) 12%,transparent);border-color:color-mix(in srgb,var(--amber) 34%,transparent);color:var(--amber)">
-    Saved earlier as totals: ${sr || 0} senior + ${jr || 0} junior hrs (no per-person split). These stay as-is unless you enter per-person hours below, which will replace them.</div>`;
+    Saved earlier as totals: ${parts.join(' + ')} hrs (no per-person split). These stay as-is unless you enter per-person hours below, which will replace them.</div>`;
 }
 
 function renderOutsourcing() {
   const list = $('#e_outList');
-  const arr = entry.data.outsourcing || [];
+  const key = F().out;
+  const arr = entry.data[key] || [];
   if (!arr.length) { list.innerHTML = '<p class="muted" style="margin:4px 0">None added.</p>'; return; }
   list.innerHTML = arr.map((o, i) => `
     <div class="out-row">
@@ -427,7 +658,7 @@ function renderOutsourcing() {
       <button type="button" class="btn btn-sm btn-danger out-del" data-i="${i}">✕</button>
     </div>`).join('');
   $$('.out-del').forEach((b) => (b.onclick = () => {
-    entry.data.outsourcing.splice(Number(b.dataset.i), 1);
+    (entry.data[key] || []).splice(Number(b.dataset.i), 1);
     renderOutsourcing(); renderPreview();
   }));
 }
@@ -445,8 +676,8 @@ async function saveEntry() {
       month: entry.month,
       mode: entry.mode,
       [f.rev]: Number(entry.data[f.rev]) || 0,
-      outsourcing: entry.data.outsourcing || [],
-      notes: entry.data.notes || '',
+      [f.out]: entry.data[f.out] || [],
+      [f.notes]: entry.data[f.notes] || '',
     };
     if ((entry.data[f.res] || []).length) payload[f.res] = entry.data[f.res];
     const acc = state.boot.accounts.find((a) => a.id === entry.accountId);
@@ -455,9 +686,7 @@ async function saveEntry() {
     entry.data = r.entry;
     if (r.capacity) entry.capacity = r.capacity;
     if (r.usageOther) entry.usageOther = r.usageOther;
-    entry.data.resourcesActual = entry.data.resourcesActual || [];
-    entry.data.resourcesPlan = entry.data.resourcesPlan || [];
-    entry.data.outsourcing = entry.data.outsourcing || [];
+    normalizeEntryData(entry.data);
     const c = r.computed;
     const stName = { healthy: '✅ Healthy', review: '⚠️ Review', atrisk: '🔴 At Risk', none: '—' }[c.status];
     renderPreview(c);
@@ -481,16 +710,15 @@ function localCompute() {
   for (const r of (d[f.res] || [])) {
     const assoc = (state.boot.associates || []).find((x) => x.id === Number(r.id));
     if (!assoc) continue;
-    manpower += (Number(r.hours) || 0) * (isSenior(assoc) ? a.srRate : a.jrRate);
+    manpower += (Number(r.hours) || 0) * rateFor(assoc);
   }
-  const outsourcing = (d.outsourcing || []).reduce((s, o) => s + (Number(o.cost) || 0), 0);
-  const contingency = revenue * a.contingency;
-  const totalCost = manpower + outsourcing + contingency;
+  const outsourcing = (d[f.out] || []).reduce((s, o) => s + (Number(o.cost) || 0), 0);
+  const totalCost = manpower + outsourcing;
   const grossProfit = revenue - totalCost;
   const gm = revenue > 0 ? grossProfit / revenue : 0;
   let status = 'none';
   if (revenue > 0) status = gm >= a.gmHealthy ? 'healthy' : gm >= a.gmMin ? 'review' : 'atrisk';
-  return { revenue, manpower, outsourcing, toolShare: 0, contingency, totalCost, grossProfit, gm, status, approx: true };
+  return { revenue, manpower, outsourcing, toolShare: 0, totalCost, grossProfit, gm, status, approx: true };
 }
 
 function renderPreview(computed) {
@@ -503,7 +731,6 @@ function renderPreview(computed) {
     row('Manpower', '− ' + inr(c.manpower)) +
     row('Outsourcing', '− ' + inr(c.outsourcing)) +
     row('Tool share', '− ' + inr(c.toolShare) + (c.approx ? ' *' : '')) +
-    row('Contingency', '− ' + inr(c.contingency)) +
     `<div class="prow total"><span>Gross profit</span><span class="val">${inrUsd(c.grossProfit)}</span></div>` +
     `<div class="gm-badge st-${c.status}">GM ${pct(c.gm)} · ${stName}</div>` +
     (c.approx ? '<p class="muted" style="font-size:11px;margin-top:10px">* tool-share is apportioned across accounts when you save.</p>' : '');
@@ -512,31 +739,29 @@ function renderPreview(computed) {
 // ---- team / resource manager (add / adjust senior vs junior) ----
 function manageTeam() {
   const render = () => {
-    const list = state.boot.associates || [];
+    const catOpts = (sel) => CATEGORIES.map((c) => `<option value="${c}" ${c === sel ? 'selected' : ''}>${c}</option>`).join('');
+    const list = (state.boot.associates || []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
     const rows = list.map((p) => `
       <div class="team-row" data-id="${p.id}">
         <input class="tm-name" type="email" value="${esc(p.name)}" placeholder="email@domain" />
-        <select class="tm-type">
-          <option value="Sr. Resource" ${isSenior(p) ? 'selected' : ''}>Senior</option>
-          <option value="Jr. Resource" ${!isSenior(p) ? 'selected' : ''}>Junior</option>
-        </select>
+        <select class="tm-cat">${catOpts(categoryOf(p))}</select>
         <button class="btn btn-sm tm-save">Save</button>
         <button class="btn btn-sm btn-danger tm-del">✕</button>
       </div>`).join('');
     const body = el('div');
     body.innerHTML = `
-      <p class="muted">The team is loaded from <code>emp details.txt</code>. Each resource is identified by their <b>email</b>; set who counts as a senior or junior resource — this drives the ₹/hr rate used in costing.</p>
+      <p class="muted">The team is loaded from <code>emp details.txt</code>, with categories from <code>emp categories.txt</code>. Each resource is identified by their <b>email</b>; its category (<b>Senior · Middle · Junior</b>) drives the ₹/hr rate used in costing.</p>
       <div id="teamList">${rows || '<p class="muted">No resources yet.</p>'}</div>
       <div class="team-add">
         <input id="tm_newName" type="email" placeholder="New person's email" />
-        <select id="tm_newType"><option value="Sr. Resource">Senior</option><option value="Jr. Resource">Junior</option></select>
+        <select id="tm_newCat">${catOpts('Middle')}</select>
         <button id="tm_add" class="btn btn-sm btn-primary">+ Add</button>
       </div>`;
     openModalCustom('Manage team / resources', body);
     body.querySelectorAll('.team-row').forEach((rowEl) => {
       const id = Number(rowEl.dataset.id);
       rowEl.querySelector('.tm-save').onclick = async () => {
-        await api('/associates/' + id, { method: 'PUT', body: JSON.stringify({ name: rowEl.querySelector('.tm-name').value, type: rowEl.querySelector('.tm-type').value }) });
+        await api('/associates/' + id, { method: 'PUT', body: JSON.stringify({ name: rowEl.querySelector('.tm-name').value, category: rowEl.querySelector('.tm-cat').value }) });
         state.boot.associates = await api('/associates'); toast('Saved'); render();
       };
       rowEl.querySelector('.tm-del').onclick = async () => {
@@ -548,7 +773,7 @@ function manageTeam() {
     body.querySelector('#tm_add').onclick = async () => {
       const name = body.querySelector('#tm_newName').value.trim();
       if (!name) { toast('Name required'); return; }
-      await api('/associates', { method: 'POST', body: JSON.stringify({ name, type: body.querySelector('#tm_newType').value }) });
+      await api('/associates', { method: 'POST', body: JSON.stringify({ name, category: body.querySelector('#tm_newCat').value }) });
       state.boot.associates = await api('/associates'); toast('Added'); render();
     };
   };
@@ -563,12 +788,32 @@ async function loadDashboard() {
   const mode = $('#dashMode').value;
   const d = await api('/dashboard?mode=' + mode);
   state.dash = d;
-  renderComparison(d.comparison, d.comparisonYtd);
-  renderKpis(d.ytd);
+  renderKpis(d.ytd);                       // YTD portfolio KPIs up top
   renderMonthly(d.monthly);
-  setupMonthCompare(d.monthly);
+  setupPlanActual(d.comparison, d.comparisonYtd); // Plan vs Actual w/ built-in month select
+  setupClientCompare(d.comparisonByClient); // Plan vs Actual per customer
   renderWings(d.wingSummary);
   setupRanking(d.ranking);
+}
+
+// ---- drill-down details (user, 2026-08-24) ----
+// A small "🔍" button that appears on hover over a month or client cell in Reports;
+// clicking opens a full breakdown for that month / client in a new browser tab.
+function detailBtn(type, key) {
+  return `<button class="cell-detail" type="button" data-dtype="${esc(type)}" data-dkey="${esc(key)}" title="Open full details in a new tab">🔍</button>`;
+}
+function hoverCell(text, type, key, extraClass) {
+  return `<span class="cell-hover ${extraClass || ''}">${text}${detailBtn(type, key)}</span>`;
+}
+function wireDetailButtons(root) {
+  $$('.cell-detail', root || document).forEach((b) => (b.onclick = (e) => {
+    e.stopPropagation();
+    openDetailTab(b.dataset.dtype, b.dataset.dkey);
+  }));
+}
+function openDetailTab(type, key) {
+  const url = `?view=detail&type=${encodeURIComponent(type)}&key=${encodeURIComponent(key)}`;
+  window.open(url, '_blank', 'noopener');
 }
 
 // Costs are expenses, so reports show them as negative red figures (user, 2026-08-17).
@@ -582,8 +827,56 @@ function varCell(v, asPct) {
   return `<td ${cls}>${txt}</td>`;
 }
 
-function renderComparison(rows, ytd) {
-  // KPI strip
+// ---- Plan vs Actual with a built-in month selector (user, 2026-08-21) ----
+// Tick any months to total just those; none ticked = the full year. The KPI strip,
+// the scope caption and the table's total row all recompute from the selection.
+function sumComparison(rows) {
+  const s = (f) => rows.reduce((a, r) => a + (Number(r[f]) || 0), 0);
+  const planRevenue = s('planRevenue'), actualRevenue = s('actualRevenue');
+  const planCost = s('planCost'), actualCost = s('actualCost');
+  const planGP = s('planGP'), actualGP = s('actualGP');
+  const planGM = planRevenue > 0 ? planGP / planRevenue : 0;
+  const actualGM = actualRevenue > 0 ? actualGP / actualRevenue : 0;
+  return {
+    planRevenue, actualRevenue, planCost, actualCost, planGP, actualGP, planGM, actualGM,
+    revVariance: actualRevenue - planRevenue,
+    gpVariance: actualGP - planGP,
+    gmVariance: actualGM - planGM,
+  };
+}
+
+function setupPlanActual(rows, ytd) {
+  state.cmpRows = rows || [];
+  state.cmpYtd = ytd;
+  const pick = $('#cmpMonthsPick');
+  if (pick) {
+    const prev = new Set(state.cmpMonths || []);
+    pick.innerHTML = state.cmpRows.map((r) => {
+      const has = r.planRevenue || r.actualRevenue;
+      return `<label class="mp-chip ${has ? '' : 'mp-empty'}"><input type="checkbox" value="${r.month}" ${prev.has(r.month) ? 'checked' : ''}/> ${r.month}</label>`;
+    }).join('');
+    $$('#cmpMonthsPick input[type=checkbox]').forEach((cb) => (cb.onchange = () => {
+      state.cmpMonths = $$('#cmpMonthsPick input:checked').map((c) => c.value);
+      renderPlanActual();
+    }));
+    const clear = $('#cmpMonthsClear');
+    if (clear) clear.onclick = () => { state.cmpMonths = []; setupPlanActual(state.cmpRows, state.cmpYtd); };
+  }
+  renderPlanActual();
+}
+
+function renderPlanActual() {
+  const rows = state.cmpRows || [];
+  const sel = state.cmpMonths || [];
+  const chosen = sel.length ? rows.filter((r) => sel.includes(r.month)) : rows;
+  const tot = sumComparison(chosen);
+
+  const scopeEl = $('#cmpScope');
+  if (scopeEl) scopeEl.textContent = sel.length
+    ? `Totals for ${sel.length} selected month${sel.length > 1 ? 's' : ''}: ${sel.join(', ')}`
+    : 'Totals for the full year (all months) — tick months above to narrow the calculation.';
+
+  // KPI strip (reflects the current selection)
   const k = (label, plan, actual, vr, asPct) => {
     const cls = vr >= 0 ? 'up' : 'down';
     const vtxt = asPct ? (vr > 0 ? '+' : '') + (vr * 100).toFixed(1) + '%' : (vr > 0 ? '+' : '') + inr(vr);
@@ -593,23 +886,61 @@ function renderComparison(rows, ytd) {
       <div class="cmp-var ${cls}">${vtxt}</div>
     </div>`;
   };
-  $('#cmpKpis').innerHTML =
-    k('Revenue', ytd.planRevenue, ytd.actualRevenue, ytd.revVariance, false) +
-    k('Gross profit', ytd.planGP, ytd.actualGP, ytd.gpVariance, false) +
-    k('Gross margin', ytd.planGM, ytd.actualGM, ytd.gmVariance, true) +
-    k('Cost', ytd.planCost, ytd.actualCost, ytd.actualCost - ytd.planCost, false);
+  const kpiEl = $('#cmpKpis');
+  if (kpiEl) kpiEl.innerHTML =
+    k('Revenue', tot.planRevenue, tot.actualRevenue, tot.revVariance, false) +
+    k('Gross profit', tot.planGP, tot.actualGP, tot.gpVariance, false) +
+    k('Gross margin', tot.planGM, tot.actualGM, tot.gmVariance, true) +
+    k('Cost', tot.planCost, tot.actualCost, tot.actualCost - tot.planCost, false);
 
+  // table — every month row, selected ones highlighted, plus a scope total row
   const head = ['Month', 'Plan Rev', 'Actual Rev', 'Δ Rev', 'Plan GP', 'Actual GP', 'Δ GP', 'Plan GM', 'Actual GM', 'Δ GM'];
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
-  const active = (rows || []).filter((r) => r.planRevenue || r.actualRevenue);
+  const active = rows.filter((r) => r.planRevenue || r.actualRevenue);
   if (!active.length) html += `<tr><td colspan="10" class="l muted">No entries yet.</td></tr>`;
   active.forEach((r) => {
-    html += `<tr><td class="l">${r.month}</td>` +
+    const on = sel.includes(r.month);
+    html += `<tr class="${on ? 'row-sel' : ''}"><td class="l">${hoverCell(r.month, 'month', r.month)}</td>` +
       `<td>${inr(r.planRevenue)}</td><td>${inr(r.actualRevenue)}</td>${varCell(r.revVariance)}` +
       `<td>${inr(r.planGP)}</td><td>${inr(r.actualGP)}</td>${varCell(r.gpVariance)}` +
       `<td>${pct(r.planGM)}</td><td>${pct(r.actualGM)}</td>${varCell(r.gmVariance, true)}</tr>`;
   });
+  if (active.length) {
+    const label = sel.length ? `Selected (${sel.length})` : 'Full year';
+    html += `<tr class="row-total"><td class="l"><b>${label}</b></td>` +
+      `<td>${inr(tot.planRevenue)}</td><td>${inr(tot.actualRevenue)}</td>${varCell(tot.revVariance)}` +
+      `<td>${inr(tot.planGP)}</td><td>${inr(tot.actualGP)}</td>${varCell(tot.gpVariance)}` +
+      `<td>${pct(tot.planGM)}</td><td>${pct(tot.actualGM)}</td>${varCell(tot.gmVariance, true)}</tr>`;
+  }
   $('#cmpTable').innerHTML = html + '</tbody>';
+  wireDetailButtons($('#cmpTable'));
+}
+
+// ---- Plan vs Actual per customer (user, 2026-08-24) ----
+// One row per client (summed across its departments + months), showing planned vs
+// actual revenue, cost, gross profit and margin with the variance. Filterable by name.
+function setupClientCompare(rows) {
+  state.clientCmp = rows || [];
+  const search = $('#clientCmpSearch');
+  if (search) search.oninput = renderClientCompare;
+  renderClientCompare();
+}
+
+function renderClientCompare() {
+  const q = (($('#clientCmpSearch') && $('#clientCmpSearch').value) || '').trim().toLowerCase();
+  const rows = (state.clientCmp || []).filter((r) => !q || String(r.name || '').toLowerCase().includes(q));
+  const head = ['Client', 'Plan Rev', 'Actual Rev', 'Δ Rev', 'Plan Cost', 'Actual Cost', 'Plan GP', 'Actual GP', 'Δ GP', 'Plan GM', 'Actual GM', 'Δ GM'];
+  let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
+  if (!rows.length) html += `<tr><td colspan="12" class="l muted">${(state.clientCmp || []).length ? 'No clients match the filter.' : 'No entries yet.'}</td></tr>`;
+  rows.forEach((r) => {
+    html += `<tr><td class="l">${hoverCell(esc(r.name), 'client', r.name)}</td>` +
+      `<td>${inr(r.planRevenue)}</td><td>${inr(r.actualRevenue)}</td>${varCell(r.revVariance)}` +
+      `${costCell(r.planCost)}${costCell(r.actualCost)}` +
+      `<td>${inr(r.planGP)}</td><td>${inr(r.actualGP)}</td>${varCell(r.gpVariance)}` +
+      `<td>${pct(r.planGM)}</td><td>${pct(r.actualGM)}</td>${varCell(r.gmVariance, true)}</tr>`;
+  });
+  $('#clientCmpTable').innerHTML = html + '</tbody>';
+  wireDetailButtons($('#clientCmpTable'));
 }
 
 function renderKpis(y) {
@@ -630,51 +961,10 @@ function renderMonthly(rows) {
   const head = ['Month', 'Revenue', 'Manpower', 'Outsource', 'Tool', 'Total Cost', 'Gross Profit', 'GM %', 'Active', '✅', '⚠️', '🔴'];
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
   rows.forEach((r) => {
-    html += `<tr><td class="l">${r.month}</td><td>${inrUsd(r.revenue)}</td>${costCell(r.manpower)}${costCell(r.outsourcing)}${costCell(r.toolShare)}${costCell(r.totalCost)}<td>${inrUsd(r.grossProfit)}</td><td>${pct(r.gm)}</td><td>${r.activeAccounts}</td><td>${r.healthy}</td><td>${r.review}</td><td>${r.atrisk}</td></tr>`;
+    html += `<tr><td class="l">${hoverCell(r.month, 'month', r.month)}</td><td>${inrUsd(r.revenue)}</td>${costCell(r.manpower)}${costCell(r.outsourcing)}${costCell(r.toolShare)}${costCell(r.totalCost)}<td>${inrUsd(r.grossProfit)}</td><td>${pct(r.gm)}</td><td>${r.activeAccounts}</td><td>${r.healthy}</td><td>${r.review}</td><td>${r.atrisk}</td></tr>`;
   });
   $('#monthlyTable').innerHTML = html + '</tbody>';
-}
-
-// ---- compare two or more months side by side (user, 2026-08-17) ----
-function setupMonthCompare(monthly) {
-  state.monthly = monthly || [];
-  const pick = $('#cmpMonthsPick');
-  if (!pick) return;
-  const prev = new Set(state.cmpMonths || []);
-  pick.innerHTML = state.monthly.map((m) => {
-    const has = m.revenue || m.totalCost;
-    return `<label class="mp-chip ${has ? '' : 'mp-empty'}"><input type="checkbox" value="${m.month}" ${prev.has(m.month) ? 'checked' : ''}/> ${m.month}</label>`;
-  }).join('');
-  $$('#cmpMonthsPick input[type=checkbox]').forEach((cb) => (cb.onchange = onMonthCompareChange));
-  const clear = $('#cmpMonthsClear');
-  if (clear) clear.onclick = () => { state.cmpMonths = []; setupMonthCompare(state.monthly); };
-  renderMonthCompare();
-}
-function onMonthCompareChange() {
-  state.cmpMonths = $$('#cmpMonthsPick input:checked').map((c) => c.value);
-  renderMonthCompare();
-}
-function renderMonthCompare() {
-  const tbl = $('#cmpMonthsTable');
-  if (!tbl) return;
-  const sel = state.cmpMonths || [];
-  if (sel.length < 2) {
-    tbl.innerHTML = `<tbody><tr><td class="l muted">Tick two or more months above to compare them side by side.</td></tr></tbody>`;
-    return;
-  }
-  const chosen = (state.monthly || []).filter((m) => sel.includes(m.month));
-  const head = ['Metric', ...chosen.map((m) => m.month)];
-  let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
-  const line = (label, cells) => `<tr><td class="l">${label}</td>${cells.map((c) => `<td>${c}</td>`).join('')}</tr>`;
-  html += line('Revenue', chosen.map((m) => inrUsd(m.revenue)));
-  html += line('Manpower', chosen.map((m) => costSpan(m.manpower)));
-  html += line('Outsourcing', chosen.map((m) => costSpan(m.outsourcing)));
-  html += line('Tool share', chosen.map((m) => costSpan(m.toolShare)));
-  html += line('Total cost', chosen.map((m) => costSpan(m.totalCost)));
-  html += line('Gross profit', chosen.map((m) => inrUsd(m.grossProfit)));
-  html += line('Gross margin', chosen.map((m) => pct(m.gm)));
-  html += line('Active accounts', chosen.map((m) => m.activeAccounts));
-  tbl.innerHTML = html + '</tbody>';
+  wireDetailButtons($('#monthlyTable'));
 }
 
 function renderWings(rows) {
@@ -713,17 +1003,122 @@ function renderRanking() {
   if (!rows.length) html += `<tr><td colspan="10" class="l muted">${(state.rankRows || []).length ? 'No accounts match the filter.' : 'No entries yet — use the Update tab.'}</td></tr>`;
   rows.forEach((r, i) => {
     const vClass = r.variance >= 0 ? 'style="color:var(--green)"' : 'style="color:var(--red)"';
-    html += `<tr><td class="l">${i + 1}</td><td class="l">${esc(r.name)}</td><td class="l">${esc(r.wing) || '—'}</td><td>${inrUsd(r.revenue)}</td>${costCell(r.totalCost)}<td>${inrUsd(r.grossProfit)}</td><td>${pct(r.gm)}</td><td>${pct(r.budgetGM)}</td><td ${vClass}>${(r.variance * 100).toFixed(1)}%</td><td>${statusPill(r.status)}</td></tr>`;
+    html += `<tr><td class="l">${i + 1}</td><td class="l">${hoverCell(esc(r.name), 'client', r.name)}</td><td class="l">${esc(r.wing) || '—'}</td><td>${inrUsd(r.revenue)}</td>${costCell(r.totalCost)}<td>${inrUsd(r.grossProfit)}</td><td>${pct(r.gm)}</td><td>${pct(r.budgetGM)}</td><td ${vClass}>${(r.variance * 100).toFixed(1)}%</td><td>${statusPill(r.status)}</td></tr>`;
   });
   $('#rankTable').innerHTML = html + '</tbody>';
+  wireDetailButtons($('#rankTable'));
+}
+
+// ================= DRILL-DOWN DETAIL VIEW (opens in its own tab) =================
+// Reached only via ?view=detail&type=…&key=… (the 🔍 buttons in Reports). Shows every
+// entry behind a month or a client — Plan and Actual side by side, with the resources,
+// outsourcing and notes that make up each figure (user, 2026-08-24).
+function maybeOpenDetail() {
+  const p = new URLSearchParams(location.search);
+  if (p.get('view') !== 'detail') return false;
+  const type = p.get('type') === 'client' ? 'client' : 'month';
+  const key = p.get('key') || '';
+  switchView('detail');
+  loadDetail(type, key);
+  return true;
+}
+
+async function loadDetail(type, key) {
+  const host = $('#detailBody');
+  $('#detailTitle').textContent = (type === 'client' ? 'Client · ' : 'Month · ') + key;
+  document.title = `${type === 'client' ? 'Client' : 'Month'} · ${key} — BNGM`;
+  host.innerHTML = '<p class="muted">Loading…</p>';
+  try {
+    const d = await api(`/detail?type=${encodeURIComponent(type)}&key=${encodeURIComponent(key)}`);
+    renderDetail(d);
+  } catch (e) { host.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+}
+
+function renderDetail(d) {
+  const host = $('#detailBody');
+  const p = d.planTotals || {}, a = d.actualTotals || {};
+  const k = (label, plan, actual, asPct, cost) => {
+    const vr = (Number(actual) || 0) - (Number(plan) || 0);
+    const cls = (cost ? -vr : vr) >= 0 ? 'up' : 'down';
+    const fmt = (v) => asPct ? pct(v) : inr(v);
+    const vtxt = asPct ? (vr > 0 ? '+' : '') + (vr * 100).toFixed(1) + '%' : (vr > 0 ? '+' : '') + inr(vr);
+    return `<div class="cmp-kpi">
+      <div class="label">${label}</div>
+      <div class="cmp-two"><span class="plan">Plan ${fmt(plan)}</span><span class="act">Actual ${fmt(actual)}</span></div>
+      <div class="cmp-var ${cls}">${vtxt}</div>
+    </div>`;
+  };
+  const totals = `<div class="cmp-row">
+    ${k('Revenue', p.revenue, a.revenue, false)}
+    ${k('Total cost', p.totalCost, a.totalCost, false, true)}
+    ${k('Gross profit', p.grossProfit, a.grossProfit, false)}
+    ${k('Gross margin', p.gm, a.gm, true)}
+  </div>`;
+
+  if (!d.items || !d.items.length) {
+    host.innerHTML = totals + '<p class="muted" style="margin-top:16px">No entries recorded here yet.</p>';
+    return;
+  }
+  const cards = d.items.map((it) => detailCard(it, d.type)).join('');
+  host.innerHTML = totals + `<div class="detail-cards">${cards}</div>`;
+}
+
+function detailCard(it, type) {
+  const title = type === 'client' ? `${esc(it.month)} · ${esc(it.wing || '—')}` : `${esc(it.name)} · ${esc(it.wing || '—')}`;
+  const p = it.plan || {}, a = it.actual || {};
+  const line = (label, plan, actual, asPct, cost) => {
+    const fmt = (v) => asPct ? pct(v) : (cost ? costSpan(v) : inr(v));
+    return `<div class="prow"><span>${label}</span><span class="d-two"><span class="plan">${fmt(plan)}</span><span class="act">${fmt(actual)}</span></span></div>`;
+  };
+  const resList = (arr) => (arr && arr.length)
+    ? arr.map((r) => `<div class="pr-line"><span>${esc(r.name)}${(isSuper() && r.category) ? ` <span class="cat-tag cat-${String(r.category).toLowerCase()}">${esc(r.category)}</span>` : ''}</span><span class="val">${r.hours} hr</span></div>`).join('')
+    : '<div class="muted small">None</div>';
+  const outList = (arr) => (arr && arr.length)
+    ? arr.map((o) => `<div class="pr-line"><span>${esc(o.jobType || 'Others')}</span><span class="val">${inr(o.cost)}</span></div>`).join('')
+    : '<div class="muted small">None</div>';
+  const notes = (t) => t ? `<div class="d-notes">${esc(t)}</div>` : '<div class="muted small">—</div>';
+  return `<div class="detail-card glass">
+    <div class="dc-head">${title}</div>
+    <div class="dc-figs">
+      <div class="d-two-head"><span></span><span class="d-two"><span class="plan">Plan</span><span class="act">Actual</span></span></div>
+      ${line('Revenue', p.revenue, a.revenue)}
+      ${line('Manpower', p.manpower, a.manpower, false, true)}
+      ${line('Outsourcing', p.outsourcing, a.outsourcing, false, true)}
+      ${line('Tool share', p.toolShare, a.toolShare, false, true)}
+      ${line('Total cost', p.totalCost, a.totalCost, false, true)}
+      ${line('Gross profit', p.grossProfit, a.grossProfit)}
+      ${line('Gross margin', p.gm, a.gm, true)}
+    </div>
+    <div class="dc-cols">
+      <div class="dc-col">
+        <div class="pr-sub">Planned resources</div>${resList(it.resourcesPlan)}
+        <div class="pr-sub">Planned outsourcing</div>${outList(it.outsourcingPlan)}
+        <div class="pr-sub">Planned notes</div>${notes(it.notesPlan)}
+      </div>
+      <div class="dc-col">
+        <div class="pr-sub">Actual resources</div>${resList(it.resourcesActual)}
+        <div class="pr-sub">Actual outsourcing</div>${outList(it.outsourcingActual)}
+        <div class="pr-sub">Actual notes</div>${notes(it.notesActual)}
+      </div>
+    </div>
+  </div>`;
 }
 
 // ================= TOOLS (table + cumulative panel) =================
 $('#addToolBtn').addEventListener('click', () => editTool(null));
 
+function amtInr(amount, currency) {
+  const c = Number(amount) || 0;
+  return currency === 'INR' ? c : c * fxRate();
+}
 function toolMonthlyInr(t) {
-  const cost = Number(t.cost) || 0;
-  return t.currency === 'INR' ? cost : cost * fxRate();
+  return amtInr(t.cost, t.currency);
+}
+// Human-readable per-department split for a common tool (used as a tooltip).
+function commonSplitLabel(t) {
+  const dc = (t && t.deptCosts) || {};
+  const parts = Object.entries(dc).map(([d, amt]) => `${d}: ${inr(amtInr(amt, t.currency))}`);
+  return parts.length ? 'Split — ' + parts.join(', ') : 'Common (no split set)';
 }
 function monthsElapsed(startDate, endDate) {
   if (!startDate) return 0;
@@ -758,7 +1153,7 @@ function renderTools() {
     const statusTxt = stopped ? `<span class="pill atrisk">■ Stopped</span>` : `<span class="pill healthy">▶ Active</span>`;
     html += `<tr class="${stopped ? 'tool-stopped' : ''}">
       <td class="l"><b>${esc(t.name)}</b>${t.description ? `<div class="muted small">${esc(t.description)}</div>` : ''}${t.why ? `<div class="why-inline">Why: ${esc(t.why)}</div>` : ''}</td>
-      <td class="l">${esc(t.department || 'General')}</td>
+      <td class="l">${t.common ? `<span class="tag-common" title="${esc(commonSplitLabel(t))}">Common</span>` : esc(t.department || 'General')}</td>
       <td>${costTxt}<span class="per">/mo</span></td>
       <td>${t.startDate || '—'}${stopped && t.stopDate ? `<div class="muted small">stopped ${t.stopDate}</div>` : ''}</td>
       <td>${statusTxt}</td>
@@ -786,11 +1181,32 @@ function renderToolsCumulative(tools) {
   const dates = tools.map((t) => t.startDate).filter(Boolean).sort();
   const since = dates[0] || '—';
 
-  // per-department monthly (active only)
+  // per-department monthly (active only). Common tools spread their cost across the
+  // departments named in their per-department split (user, 2026-08-21).
   const byDept = {};
-  activeTools.forEach((t) => { const d = t.department || 'General'; byDept[d] = (byDept[d] || 0) + toolMonthlyInr(t); });
-  const deptRows = Object.entries(byDept).sort((a, b) => b[1] - a[1])
-    .map(([d, v]) => `<div class="prow"><span>${esc(d)}</span><span class="val">${inr(v)}</span></div>`).join('');
+  activeTools.forEach((t) => {
+    if (t.common && t.deptCosts && Object.keys(t.deptCosts).length) {
+      for (const [d, amt] of Object.entries(t.deptCosts)) byDept[d] = (byDept[d] || 0) + amtInr(amt, t.currency);
+    } else {
+      const d = t.department || 'General';
+      byDept[d] = (byDept[d] || 0) + toolMonthlyInr(t);
+    }
+  });
+  const budgets = (state.boot && state.boot.toolBudgets) || {};
+  // every department that has either spend or an allocated budget
+  const deptNames = [...new Set([...Object.keys(byDept), ...Object.keys(budgets)])];
+  const deptRows = deptNames
+    .map((d) => ({ d, spend: byDept[d] || 0, budget: Number(budgets[d]) || 0 }))
+    .sort((a, b) => (b.budget || b.spend) - (a.budget || a.spend))
+    .map(({ d, spend, budget }) => {
+      const over = budget > 0 && spend > budget;
+      const budgetTxt = budget > 0
+        ? `<span class="tb-budget ${over ? 'over' : 'ok'}">${inr(spend)} / ${inr(budget)}${over ? ' ⚠' : ''}</span>`
+        : `<span class="val">${inr(spend)}</span>`;
+      return `<div class="prow"><span>${esc(d)}</span>${budgetTxt}</div>`;
+    }).join('');
+
+  const totalBudget = Object.values(budgets).reduce((s, v) => s + (Number(v) || 0), 0);
 
   const stat = (label, val, sub) => `<div class="cum-stat"><div class="label">${label}</div><div class="value">${val}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>`;
   $('#toolsCumulative').innerHTML = `
@@ -799,8 +1215,9 @@ function renderToolsCumulative(tools) {
     ${stat('Monthly recurring', inr(monthlyActive), '≈ ' + usd(monthlyActive))}
     ${stat('Spent to date', inr(spentAll), 'since ' + since)}
     ${stat('Annualised', inr(monthlyActive * 12), '≈ ' + usd(monthlyActive * 12))}
-    ${deptRows ? `<h3 style="margin-top:16px">Monthly by department</h3><div class="cum-list">${deptRows}</div>` : ''}
-    <p class="muted small" style="margin-top:12px">Spend to date = monthly cost × months since start (until stop date for stopped tools). Stopped tools keep their history.</p>`;
+    ${totalBudget > 0 ? stat('Monthly budget', inr(totalBudget), monthlyActive > totalBudget ? 'over by ' + inr(monthlyActive - totalBudget) : inr(totalBudget - monthlyActive) + ' left') : ''}
+    ${deptRows ? `<h3 style="margin-top:16px">Monthly by department${totalBudget > 0 ? ' <span class="muted small">(spend / budget)</span>' : ''}</h3><div class="cum-list">${deptRows}</div>` : ''}
+    <p class="muted small" style="margin-top:12px">Spend to date = monthly cost × months since start (until stop date for stopped tools). Budgets are set by Super Admin under Assumptions.</p>`;
 }
 
 async function toggleToolActive(id) {
@@ -817,15 +1234,21 @@ async function toggleToolActive(id) {
 
 function editTool(id) {
   const t = id ? (state.boot.tools || []).find((x) => x.id === id) : null;
+  // Only Super Admin gets the "common tool" option (user, 2026-08-21).
+  const isSuper = !!state.roleInfo.canEditSettings;
   const depts = [...(state.boot.wings || []), 'General', 'All departments'];
   const curDept = t ? t.department : 'General';
   const deptOpts = [...new Set([curDept, ...depts])].map((d) => `<option value="${esc(d)}" ${t && t.department === d ? 'selected' : ''}>${esc(d)}</option>`).join('');
+  // Departments a common tool's cost can be split across.
+  const splitDepts = [...new Set([...(state.boot.wings || []), 'General', ...Object.keys((t && t.deptCosts) || {})])];
+  const existingSplit = (t && t.deptCosts) || {};
+  const dcKey = (d) => 'tdc_' + d.replace(/[^a-z0-9]/gi, '_');
   const body = el('div');
   body.innerHTML = `
     <label class="field"><span>Tool name</span><input id="t_name" value="${t ? esc(t.name) : ''}" placeholder="e.g. Ahrefs" /></label>
     <label class="field"><span>What is it?</span><textarea id="t_desc" rows="2" placeholder="Short description">${t ? esc(t.description) : ''}</textarea></label>
     <div class="field-row">
-      <label class="field"><span>Cost / month</span><input id="t_cost" type="number" min="0" step="0.01" value="${t ? (t.cost || 0) : ''}" placeholder="0" /></label>
+      <label class="field" id="t_costWrap"><span>Cost / month</span><input id="t_cost" type="number" min="0" step="0.01" value="${t ? (t.cost || 0) : ''}" placeholder="0" /></label>
       <label class="field"><span>Currency</span>
         <select id="t_cur">
           <option value="USD" ${!t || t.currency !== 'INR' ? 'selected' : ''}>USD ($)</option>
@@ -837,21 +1260,55 @@ function editTool(id) {
       <label class="field"><span>Start date</span><input id="t_start" type="date" value="${t ? (t.startDate || '') : ''}" /></label>
       <label class="field"><span>Stop date (optional)</span><input id="t_stop" type="date" value="${t ? (t.stopDate || '') : ''}" /></label>
     </div>
-    <label class="field"><span>Department</span><select id="t_dept">${deptOpts}</select></label>
+    ${isSuper ? `<label class="field checkbox"><input id="t_common" type="checkbox" ${t && t.common ? 'checked' : ''} /> <span>Common tool — cost budgeted per department (Super Admin)</span></label>` : ''}
+    <label class="field" id="t_deptWrap"><span>Department</span><select id="t_dept">${deptOpts}</select></label>
+    <div class="field" id="t_deptCostsWrap" style="display:none">
+      <span>Cost by department (per month) — the tool's total is the sum</span>
+      <div id="t_deptCosts" class="grid-form small">${splitDepts.map((d) => `<label>${esc(d)}<input id="${dcKey(d)}" data-dept="${esc(d)}" class="tdc-input" type="number" min="0" step="0.01" value="${existingSplit[d] || ''}" placeholder="0" /></label>`).join('')}</div>
+      <div class="muted small" style="margin-top:6px">Total: <b id="t_deptTotal">0</b> / mo <span id="t_deptCur"></span></div>
+    </div>
     <label class="field"><span>Why is it needed?</span><textarea id="t_why" rows="2" placeholder="Reason / use case">${t ? esc(t.why) : ''}</textarea></label>`;
+
+  const commonEl = () => $('#t_common');
+  const isCommon = () => !!(commonEl() && commonEl().checked);
+  const recalcSplit = () => {
+    let total = 0;
+    $$('.tdc-input', body).forEach((i) => { total += Number(i.value) || 0; });
+    const cur = $('#t_cur').value === 'INR' ? '₹' : '$';
+    $('#t_deptTotal').textContent = cur + total.toLocaleString('en-US');
+  };
+  // A common tool has no single department and no single cost — its cost is split
+  // per department instead.
+  const syncCommon = () => {
+    const on = isCommon();
+    $('#t_deptWrap').style.display = on ? 'none' : '';
+    $('#t_costWrap').style.display = on ? 'none' : '';
+    $('#t_deptCostsWrap').style.display = on ? '' : 'none';
+    if (on) recalcSplit();
+  };
+
   openModal(id ? 'Edit tool' : 'New tool', body, async () => {
     const name = $('#t_name').value.trim();
     if (!name) { toast('Tool name required'); return false; }
+    const common = isCommon();
     const payload = {
       name,
       description: $('#t_desc').value,
-      cost: Number($('#t_cost').value) || 0,
       currency: $('#t_cur').value,
-      department: $('#t_dept').value,
+      common,
       why: $('#t_why').value,
       startDate: $('#t_start').value,
       stopDate: $('#t_stop').value,
     };
+    if (common) {
+      const deptCosts = {};
+      $$('.tdc-input', body).forEach((i) => { const v = Number(i.value) || 0; if (v > 0) deptCosts[i.dataset.dept] = v; });
+      payload.deptCosts = deptCosts;
+      payload.department = 'All departments';
+    } else {
+      payload.cost = Number($('#t_cost').value) || 0;
+      payload.department = $('#t_dept').value;
+    }
     if (id) await api('/tools/' + id, { method: 'PUT', body: JSON.stringify(payload) });
     else await api('/tools', { method: 'POST', body: JSON.stringify(payload) });
     state.boot.tools = await api('/tools');
@@ -859,6 +1316,10 @@ function editTool(id) {
     toast('Saved');
     return true;
   });
+  if (commonEl()) commonEl().onchange = syncCommon;
+  $$('.tdc-input', body).forEach((i) => (i.oninput = recalcSplit));
+  $('#t_cur').addEventListener('change', recalcSplit);
+  syncCommon();
 }
 
 async function deleteTool(id) {
@@ -870,64 +1331,176 @@ async function deleteTool(id) {
   toast('Deleted');
 }
 
-// ================= ACCOUNTS (active / inactive) =================
+// ================= CLIENTS =================
 function renderAccounts() {
-  const accts = state.boot.accounts;
-  const ro = !!state.roleInfo.readOnly;
-  const head = ['Account', 'Wing', 'Status', ...(ro ? [] : [''])];
+  if (isSuper()) renderAccountsSuper();
+  else renderAccountsDept();
+}
+
+// Super: one row per client NAME with a checkbox per department, plus rename/delete.
+function renderAccountsSuper() {
+  const wings = state.boot.wings || [];
+  const groups = clientGroups();
+  const names = [...groups.keys()].sort((a, b) => a.localeCompare(b));
+  const head = ['Client', 'Departments', ''];
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i < 2 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
-  if (!accts.length) html += `<tr><td colspan="${ro ? 3 : 4}" class="l muted">No accounts in your wing yet.</td></tr>`;
-  accts.forEach((a) => {
-    const on = a.active !== false;
-    const statusCell = ro
-      ? `<td>${on ? '● Active' : '○ Inactive'}</td>`
-      : `<td><button class="btn btn-sm status-toggle ${on ? 'st-on' : 'st-off'}" data-id="${a.id}">${on ? '● Active' : '○ Inactive'}</button></td>`;
-    html += `<tr data-id="${a.id}" class="${on ? '' : 'acct-off'}">
-      <td class="l">${esc(a.name)}</td>
-      <td class="l">${esc(a.wing) || '—'}</td>
-      ${statusCell}
-      ${ro ? '' : `<td><button class="btn btn-sm edit-acct" data-id="${a.id}">Edit</button></td>`}
+  if (!names.length) html += `<tr><td colspan="3" class="l muted">No clients yet. Use “+ New client”.</td></tr>`;
+  names.forEach((name) => {
+    const accs = groups.get(name) || [];
+    const has = (w) => accs.some((a) => (a.wing || '') === w);
+    const unassigned = accs.some((a) => !a.wing)
+      ? '<span class="tag-common" title="No department yet — tick a box to assign">Unassigned</span> ' : '';
+    const allOn = wings.length > 0 && wings.every((w) => has(w));
+    const boxes = wings.map((w) =>
+      `<label class="dept-box"><input type="checkbox" class="dept-cb" data-name="${esc(name)}" data-wing="${esc(w)}" ${has(w) ? 'checked' : ''}/> ${esc(w)}</label>`).join('');
+    const allBtn = `<button class="btn btn-sm dept-all" data-name="${esc(name)}" data-on="${allOn ? '1' : '0'}" title="${allOn ? 'Remove this client from every department' : 'Add this client to every department'}">${allOn ? '✕ None' : '✓ All'}</button>`;
+    html += `<tr>
+      <td class="l"><b>${esc(name)}</b></td>
+      <td class="l"><div class="dept-boxes">${allBtn}${unassigned}${boxes}</div></td>
+      <td class="client-actions">
+        <button class="btn btn-sm rename-client" data-name="${esc(name)}">Rename</button>
+        <button class="btn btn-sm btn-danger del-client" data-name="${esc(name)}">Delete</button>
+      </td>
     </tr>`;
   });
   $('#accountsTable').innerHTML = html + '</tbody>';
-  $$('.edit-acct').forEach((b) => (b.onclick = () => editAccount(Number(b.dataset.id))));
-  $$('.status-toggle').forEach((b) => (b.onclick = () => toggleAccountActive(Number(b.dataset.id))));
+  $$('.dept-cb').forEach((cb) => (cb.onchange = () => toggleClientDept(cb.dataset.name, cb.dataset.wing, cb.checked)));
+  $$('.dept-all').forEach((b) => (b.onclick = () => setAllClientDepts(b.dataset.name, b.dataset.on !== '1')));
+  $$('.rename-client').forEach((b) => (b.onclick = () => renameClient(b.dataset.name)));
+  $$('.del-client').forEach((b) => (b.onclick = () => deleteClient(b.dataset.name)));
+  $('#addAccountBtn').classList.remove('hidden');
+}
+
+// Departments: read-only list of their own clients (add via the button; no edit/delete).
+function renderAccountsDept() {
+  const ro = !!state.roleInfo.readOnly;
+  const groups = clientGroups();
+  const names = [...groups.keys()].sort((a, b) => a.localeCompare(b));
+  const head = ['Client', 'Department'];
+  let html = '<thead><tr>' + head.map((h) => `<th class="l">${h}</th>`).join('') + '</tr></thead><tbody>';
+  if (!names.length) html += `<tr><td colspan="2" class="l muted">No clients in your department yet.${ro ? '' : ' Use “+ New client”.'}</td></tr>`;
+  names.forEach((name) => {
+    const accs = groups.get(name) || [];
+    const depts = accs.map((a) => esc(a.wing || 'Unassigned')).join(', ');
+    html += `<tr><td class="l">${esc(name)}</td><td class="l">${depts}</td></tr>`;
+  });
+  $('#accountsTable').innerHTML = html + '</tbody>';
   $('#addAccountBtn').classList.toggle('hidden', ro || !state.roleInfo.canCreateAccounts);
 }
 
-async function toggleAccountActive(id) {
-  const a = state.boot.accounts.find((x) => x.id === id);
-  if (!a) return;
-  const next = !(a.active !== false);
-  await api('/accounts/' + id, { method: 'PUT', body: JSON.stringify({ active: next }) });
-  a.active = next;
-  renderAccounts();
-  toast(next ? 'Client set active' : 'Client set inactive');
-}
-
-$('#addAccountBtn').addEventListener('click', () => editAccount(null));
-
-function editAccount(id) {
-  const acct = id ? state.boot.accounts.find((a) => a.id === id) : null;
-  const wings = state.roleInfo.wings === '*' ? state.boot.wings : state.roleInfo.wings;
-  const body = el('div');
-  body.innerHTML = `
-    <label class="field"><span>Client name</span><input id="m_name" value="${acct ? esc(acct.name) : ''}" /></label>
-    <label class="field"><span>Wing / department</span>
-      <select id="m_wing">${wings.map((w) => `<option value="${esc(w)}" ${acct && acct.wing === w ? 'selected' : ''}>${esc(w)}</option>`).join('')}</select>
-    </label>
-    <label class="field checkbox"><input id="m_active" type="checkbox" ${!acct || acct.active !== false ? 'checked' : ''} /> <span>Active client</span></label>`;
-  openModal(id ? 'Edit client' : 'New client', body, async () => {
-    const name = $('#m_name').value.trim();
-    if (!name) { toast('Name required'); return false; }
-    const payload = { name, wing: $('#m_wing').value, active: $('#m_active').checked };
-    if (id) await api('/accounts/' + id, { method: 'PUT', body: JSON.stringify(payload) });
-    else await api('/accounts', { method: 'POST', body: JSON.stringify(payload) });
+// Super — tick/untick a department for a client. Ticking repurposes an unassigned
+// row if there is one (keeping its data), else creates a new one; unticking deletes
+// that department's account (and its data) after a confirm.
+async function toggleClientDept(name, wing, checked) {
+  try {
+    const accs = clientGroups().get(name) || [];
+    if (checked) {
+      const empty = accs.find((a) => !a.wing);
+      if (empty) await api('/accounts/' + empty.id, { method: 'PUT', body: JSON.stringify({ wing }) });
+      else await api('/accounts', { method: 'POST', body: JSON.stringify({ name, wing }) });
+    } else {
+      const acc = accs.find((a) => (a.wing || '') === wing);
+      if (acc) {
+        if (!confirm(`Remove “${name}” from ${wing}? Any ${wing} data for this client will be permanently deleted.`)) { renderAccounts(); return; }
+        await api('/accounts/' + acc.id, { method: 'DELETE' });
+      }
+    }
     state.boot = await api('/bootstrap');
     renderAccounts();
     toast('Saved');
-    return true;
+  } catch (e) { toast(e.message); renderAccounts(); }
+}
+
+// Super — tick (or clear) EVERY department for a client at once. Batches the account
+// creates/repurposes (or deletes) and refreshes once at the end (user, 2026-08-24).
+async function setAllClientDepts(name, checked) {
+  const wings = state.boot.wings || [];
+  if (!wings.length) return;
+  const accs = clientGroups().get(name) || [];
+  try {
+    if (checked) {
+      const missing = wings.filter((w) => !accs.some((a) => (a.wing || '') === w));
+      if (!missing.length) { toast('Already in every department'); return; }
+      const empties = accs.filter((a) => !a.wing); // repurpose empty-wing rows first, keeping their data
+      for (const w of missing) {
+        const empty = empties.shift();
+        if (empty) await api('/accounts/' + empty.id, { method: 'PUT', body: JSON.stringify({ wing: w }) });
+        else await api('/accounts', { method: 'POST', body: JSON.stringify({ name, wing: w }) });
+      }
+    } else {
+      const assigned = accs.filter((a) => a.wing);
+      if (!assigned.length) { toast('No departments to clear'); return; }
+      if (!confirm(`Remove “${name}” from ALL departments? Every department's data for this client will be permanently deleted.`)) return;
+      for (const a of assigned) await api('/accounts/' + a.id, { method: 'DELETE' });
+    }
+    state.boot = await api('/bootstrap');
+    renderAccounts();
+    toast(checked ? 'Added to every department' : 'Removed from every department');
+  } catch (e) { toast(e.message); renderAccounts(); }
+}
+
+function renameClient(name) {
+  const body = el('div');
+  body.innerHTML = `<label class="field"><span>Client name</span><input id="m_name" value="${esc(name)}" /></label>
+    <p class="muted small">Renames this client across every department it belongs to.</p>`;
+  openModal('Rename client', body, async () => {
+    const nn = $('#m_name').value.trim();
+    if (!nn) { toast('Name required'); return false; }
+    const accs = clientGroups().get(name) || [];
+    for (const a of accs) await api('/accounts/' + a.id, { method: 'PUT', body: JSON.stringify({ name: nn }) });
+    state.boot = await api('/bootstrap'); renderAccounts(); toast('Renamed'); return true;
   });
+}
+
+async function deleteClient(name) {
+  if (!confirm(`Delete client “${name}” and ALL its data across every department? This cannot be undone.`)) return;
+  const accs = clientGroups().get(name) || [];
+  try {
+    for (const a of accs) await api('/accounts/' + a.id, { method: 'DELETE' });
+    state.boot = await api('/bootstrap'); renderAccounts(); toast('Client deleted');
+  } catch (e) { toast(e.message); }
+}
+
+$('#addAccountBtn').addEventListener('click', newClient);
+
+// New client. Super picks any set of departments; a department role is locked to its
+// own department (it can only add, never choose another department — user 2026-08-21).
+function newClient() {
+  const body = el('div');
+  if (isSuper()) {
+    const wings = state.boot.wings || [];
+    body.innerHTML = `
+      <label class="field"><span>Client name</span><input id="m_name" placeholder="Client name" /></label>
+      <div class="field"><span>Departments</span>
+        <div class="dept-boxes modal-boxes">${wings.map((w) => `<label class="dept-box"><input type="checkbox" class="new-dept" value="${esc(w)}"/> ${esc(w)}</label>`).join('')}</div>
+      </div>
+      <p class="muted small">Tick the departments this client belongs to — you can change these any time.</p>`;
+    openModal('New client', body, async () => {
+      const name = $('#m_name').value.trim();
+      if (!name) { toast('Name required'); return false; }
+      const picked = $$('.new-dept', body).filter((c) => c.checked).map((c) => c.value);
+      if (!picked.length) { toast('Pick at least one department'); return false; }
+      for (const w of picked) await api('/accounts', { method: 'POST', body: JSON.stringify({ name, wing: w }) });
+      state.boot = await api('/bootstrap'); renderAccounts(); toast('Client added'); return true;
+    });
+  } else {
+    const own = (state.roleInfo.wings && state.roleInfo.wings.length) ? state.roleInfo.wings : [];
+    const wingField = own.length > 1
+      ? `<label class="field"><span>Department</span><select id="m_wing">${own.map((w) => `<option value="${esc(w)}">${esc(w)}</option>`).join('')}</select></label>`
+      : '';
+    const note = own.length === 1
+      ? `<p class="muted small">Added under your department: <b>${esc(own[0])}</b>.</p>`
+      : (own.length ? '' : `<p class="error">Your role has no department assigned — ask Super Admin.</p>`);
+    body.innerHTML = `<label class="field"><span>Client name</span><input id="m_name" placeholder="Client name" /></label>${wingField}${note}`;
+    openModal('New client', body, async () => {
+      const name = $('#m_name').value.trim();
+      if (!name) { toast('Name required'); return false; }
+      if (!own.length) { toast('No department assigned to your role'); return false; }
+      const wing = own.length > 1 ? $('#m_wing').value : own[0];
+      await api('/accounts', { method: 'POST', body: JSON.stringify({ name, wing }) });
+      state.boot = await api('/bootstrap'); renderAccounts(); toast('Client added'); return true;
+    });
+  }
 }
 
 // ================= ASSUMPTIONS (super only) =================
@@ -950,21 +1523,22 @@ async function renderSettings() {
   const a = s.assumptions;
   const af = $('#assumptionsForm');
   const fld = (id, label, val, step = '1') => `<label>${label}<input id="${id}" type="number" step="${step}" value="${val}" /></label>`;
+  const midRate = a.midRate != null ? a.midRate : Math.round(((+a.srRate || 0) + (+a.jrRate || 0)) / 2);
   af.innerHTML =
-    fld('a_srRate', 'Sr rate (₹/hr)', a.srRate) +
-    fld('a_jrRate', 'Jr rate (₹/hr)', a.jrRate) +
+    fld('a_srRate', 'Senior rate (₹/hr)', a.srRate) +
+    fld('a_midRate', 'Middle rate (₹/hr)', midRate) +
+    fld('a_jrRate', 'Junior rate (₹/hr)', a.jrRate) +
     fld('a_srCap', 'Sr capacity (hrs/mo)', a.srCapacity) +
     fld('a_jrCap', 'Jr capacity (hrs/mo)', a.jrCapacity) +
     fld('a_resCap', 'Hours per resource / month', a.resourceMonthlyHours || 180) +
-    fld('a_cont', 'Contingency %', Math.round(a.contingency * 100)) +
     fld('a_min', 'GM min % (At Risk below)', Math.round(a.gmMin * 100)) +
     fld('a_healthy', 'GM healthy % (✅ at/above)', Math.round(a.gmHealthy * 100));
   $('#saveAssumptions').onclick = async () => {
     await api('/settings/assumptions', { method: 'PUT', body: JSON.stringify({
-      srRate: +$('#a_srRate').value, jrRate: +$('#a_jrRate').value,
+      srRate: +$('#a_srRate').value, midRate: +$('#a_midRate').value, jrRate: +$('#a_jrRate').value,
       srCapacity: +$('#a_srCap').value, jrCapacity: +$('#a_jrCap').value,
       resourceMonthlyHours: +$('#a_resCap').value || 180,
-      contingency: (+$('#a_cont').value) / 100, gmMin: (+$('#a_min').value) / 100, gmHealthy: (+$('#a_healthy').value) / 100,
+      gmMin: (+$('#a_min').value) / 100, gmHealthy: (+$('#a_healthy').value) / 100,
     }) });
     state.boot = await api('/bootstrap'); renderFx(); toast('Assumptions saved');
   };
@@ -980,6 +1554,22 @@ async function renderSettings() {
     await api('/settings/toolpool', { method: 'PUT', body: JSON.stringify(payload) });
     toast('Tool pool saved');
   };
+
+  // tool budget by department (super only) — drives spend-vs-budget on Tools page
+  const tb = $('#toolBudgetForm');
+  if (tb) {
+    const budgets = s.toolBudgets || {};
+    const depts = [...new Set([...(s.wings || []), 'General', 'All departments', ...Object.keys(budgets)])];
+    const key = (d) => 'tb_' + d.replace(/[^a-z0-9]/gi, '_');
+    tb.innerHTML = depts.map((d) => `<label>${esc(d)}<input id="${key(d)}" type="number" min="0" value="${Number(budgets[d]) || 0}" /></label>`).join('');
+    $('#saveToolBudgets').onclick = async () => {
+      const payload = {};
+      depts.forEach((d) => { payload[d] = +$('#' + key(d)).value || 0; });
+      const saved = await api('/settings/toolbudgets', { method: 'PUT', body: JSON.stringify({ budgets: payload }) });
+      state.boot.toolBudgets = saved;
+      toast('Tool budgets saved');
+    };
+  }
 
   // outsourcing options (job types) — Super can add / remove
   state.jobTypesEdit = (s.jobTypes || []).slice();
@@ -997,6 +1587,30 @@ async function renderSettings() {
     state.boot.jobTypes = list; toast('Outsourcing list saved');
   };
 
+  // help bot (Groq) — super only
+  const hb = $('#helpBotForm');
+  if (hb) {
+    let cfg = { hasKey: false, envKey: false, model: 'llama-3.3-70b-versatile' };
+    try { cfg = await api('/settings/help'); } catch { /* ignore */ }
+    const models = ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile', 'openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'meta-llama/llama-4-scout-17b-16e-instruct'];
+    if (cfg.model && !models.includes(cfg.model)) models.unshift(cfg.model);
+    hb.innerHTML =
+      `<label>Groq API key ${cfg.hasKey ? `<span class="muted small">(a key is set${cfg.envKey ? ' via env' : ''})</span>` : ''}<input id="hb_key" type="password" autocomplete="off" placeholder="${cfg.hasKey ? '•••••• leave blank to keep' : 'gsk_…'}" /></label>` +
+      `<label>Model<select id="hb_model">${models.map((m) => `<option value="${esc(m)}" ${m === cfg.model ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></label>`;
+    $('#saveHelpBot').onclick = async () => {
+      const payload = { model: $('#hb_model').value };
+      const key = $('#hb_key').value;
+      if (key) payload.apiKey = key;
+      try {
+        const saved = await api('/settings/help', { method: 'PUT', body: JSON.stringify(payload) });
+        state.boot.helpEnabled = saved.hasKey;
+        $('#hb_key').value = '';
+        updateHelpFab();
+        toast('Help bot saved');
+      } catch (e) { toast(e.message); }
+    };
+  }
+
   const pf = $('#passwordForm');
   pf.innerHTML = Object.entries(state.boot.roles).map(([role, label]) =>
     `<div class="pw-row"><input type="password" id="pw_${role}" placeholder="New password for ${label}" />
@@ -1008,6 +1622,62 @@ async function renderSettings() {
     $('#pw_' + role).value = ''; toast(state.boot.roles[role] + ' password updated');
   }));
 }
+
+// ================= HELP BOT (Groq) =================
+const help = { messages: [], busy: false };
+
+function updateHelpFab() {
+  const fab = $('#helpFab');
+  if (!fab) return;
+  const on = !!(state.boot && state.boot.helpEnabled) && !!state.token;
+  fab.classList.toggle('hidden', !on);
+  if (!on) { $('#helpPanel').classList.add('hidden'); }
+}
+
+function renderHelpLog() {
+  const log = $('#helpLog');
+  if (!log) return;
+  if (!help.messages.length) {
+    log.innerHTML = `<div class="help-msg bot">Hi! Ask me how to use the tracker or about your reports — e.g. “How do I log actual hours?” or “What’s my YTD gross margin?”</div>`;
+    return;
+  }
+  log.innerHTML = help.messages.map((m) =>
+    `<div class="help-msg ${m.role === 'user' ? 'user' : 'bot'}">${esc(m.content).replace(/\n/g, '<br>')}</div>`).join('') +
+    (help.busy ? '<div class="help-msg bot muted">…thinking</div>' : '');
+  log.scrollTop = log.scrollHeight;
+}
+
+async function sendHelp() {
+  const inp = $('#helpText');
+  const q = inp.value.trim();
+  if (!q || help.busy) return;
+  help.messages.push({ role: 'user', content: q });
+  inp.value = '';
+  help.busy = true;
+  renderHelpLog();
+  try {
+    const r = await api('/help', { method: 'POST', body: JSON.stringify({ messages: help.messages }) });
+    help.messages.push({ role: 'assistant', content: r.reply || '(no answer)' });
+  } catch (e) {
+    help.messages.push({ role: 'assistant', content: '⚠️ ' + e.message });
+  } finally {
+    help.busy = false;
+    renderHelpLog();
+  }
+}
+
+(function wireHelpBot() {
+  const fab = $('#helpFab');
+  if (!fab) return;
+  fab.addEventListener('click', () => {
+    const panel = $('#helpPanel');
+    panel.classList.toggle('hidden');
+    if (!panel.classList.contains('hidden')) { renderHelpLog(); $('#helpText').focus(); }
+  });
+  $('#helpClose').addEventListener('click', () => $('#helpPanel').classList.add('hidden'));
+  $('#helpSend').addEventListener('click', sendHelp);
+  $('#helpText').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendHelp(); });
+})();
 
 // ================= MODAL =================
 let modalOk = null;

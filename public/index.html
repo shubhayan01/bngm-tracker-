@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>JW BNGM Tracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -75,12 +78,18 @@
               <label class="eh-field"><span>Client</span>
                 <select id="e_client"></select>
               </label>
+              <label class="eh-field"><span>Service / Dept</span>
+                <select id="e_service"></select>
+              </label>
+              <label class="eh-field"><span>Year</span>
+                <select id="e_year"></select>
+              </label>
               <label class="eh-field"><span>Month</span>
-                <select id="e_month"></select>
+                <select id="e_monthName"></select>
               </label>
               <div class="eh-field mode-field"><span>Type</span>
                 <div id="e_mode" class="mode-toggle">
-                  <button data-mode="planned" type="button">🎯 Planned</button>
+                  <button data-mode="planned" type="button">🎯 Plan</button>
                   <button data-mode="actual" type="button" class="active">✅ Actual</button>
                 </div>
               </div>
@@ -114,24 +123,31 @@
           </div>
         </div>
 
-        <h3>Plan vs Actual</h3>
-        <div id="cmpKpis" class="cmp-row"></div>
-        <div class="table-scroll glass"><table id="cmpTable" class="data"></table></div>
-
-        <h3>Portfolio KPIs (selected view)</h3>
+        <h3>Portfolio KPIs (YTD, selected view)</h3>
         <div id="dashKpis" class="kpi-row"></div>
         <h3>Monthly portfolio snapshot</h3>
         <div class="table-scroll glass"><table id="monthlyTable" class="data"></table></div>
 
         <div class="view-head" style="margin-top:22px">
-          <h3 style="margin:0">Compare months</h3>
+          <h3 style="margin:0">Plan vs Actual</h3>
           <div class="controls">
-            <span class="muted small">Tick two or more months to compare side by side.</span>
-            <button id="cmpMonthsClear" class="btn btn-ghost btn-sm">Clear</button>
+            <span class="muted small">Pick months to total — none = full year.</span>
+            <button id="cmpMonthsClear" class="btn btn-ghost btn-sm">All months</button>
           </div>
         </div>
         <div id="cmpMonthsPick" class="month-pick"></div>
-        <div class="table-scroll glass"><table id="cmpMonthsTable" class="data"></table></div>
+        <div id="cmpScope" class="muted small" style="margin:-4px 0 10px"></div>
+        <div id="cmpKpis" class="cmp-row"></div>
+        <div class="table-scroll glass"><table id="cmpTable" class="data"></table></div>
+
+        <div class="view-head" style="margin-top:22px">
+          <h3 style="margin:0">Plan vs Actual by customer (YTD)</h3>
+          <div class="controls">
+            <input id="clientCmpSearch" class="rank-search" type="search" placeholder="Filter by client name…" />
+          </div>
+        </div>
+        <p class="muted small" style="margin:-6px 0 10px">Planned vs actual for each client, summed across every department and month. Hover a client to open its full breakdown.</p>
+        <div class="table-scroll glass"><table id="clientCmpTable" class="data"></table></div>
 
         <h3>Wing / department summary (YTD)</h3>
         <div class="table-scroll glass"><table id="wingTable" class="data"></table></div>
@@ -167,8 +183,20 @@
           <h2>Client List</h2>
           <button id="addAccountBtn" class="btn btn-primary">+ New client</button>
         </div>
-        <p class="muted section-note">A client is simply Active or Inactive. Inactive clients are hidden from the Update picker but keep all past figures.</p>
+        <p class="muted section-note">Super Admin can tick which departments each client belongs to, and rename or delete clients. Departments can add clients (locked to their own department) but only Super Admin can edit or delete them.</p>
         <div class="table-scroll glass"><table id="accountsTable" class="data"></table></div>
+      </section>
+
+      <!-- DETAIL / DRILL-DOWN VIEW (opened in its own tab via ?view=detail) -->
+      <section id="view-detail" class="view hidden">
+        <div class="view-head">
+          <h2 id="detailTitle">Details</h2>
+          <div class="controls">
+            <button id="detailBack" class="btn btn-ghost btn-sm">← Back to Reports</button>
+          </div>
+        </div>
+        <p class="muted section-note">Full breakdown — Plan and Actual side by side, with the resources, outsourcing and notes behind every figure.</p>
+        <div id="detailBody"></div>
       </section>
 
       <!-- ASSUMPTIONS VIEW (super only) -->
@@ -183,7 +211,7 @@
           </div>
           <div class="card glass">
             <h3>Team / resources</h3>
-            <p class="muted">Add people and set who is a senior or junior resource (drives the ₹/hr rate).</p>
+            <p class="muted">Add people and set each one's category — <b>Senior · Middle · Junior</b> — which drives their ₹/hr rate.</p>
             <button id="manageTeamBtn" class="btn btn-primary">Manage team</button>
           </div>
           <div class="card glass">
@@ -191,6 +219,12 @@
             <p class="muted">Split across accounts by revenue share each month.</p>
             <div id="toolPoolForm" class="grid-form small"></div>
             <button id="saveToolPool" class="btn btn-primary">Save tool pool</button>
+          </div>
+          <div class="card glass">
+            <h3>Tool budget by department (₹ / month)</h3>
+            <p class="muted">Monthly tool budget allocated to each department. Super Admin only — the Tools page shows spend vs budget against these.</p>
+            <div id="toolBudgetForm" class="grid-form small"></div>
+            <button id="saveToolBudgets" class="btn btn-primary">Save tool budgets</button>
           </div>
           <div class="card glass">
             <h3>Outsourcing options</h3>
@@ -201,6 +235,12 @@
               <button id="jt_add" class="btn btn-sm btn-primary">+ Add</button>
             </div>
             <button id="saveJobTypes" class="btn btn-primary" style="margin-top:12px">Save outsourcing list</button>
+          </div>
+          <div class="card glass">
+            <h3>Help bot (Groq)</h3>
+            <p class="muted">Powers the 💬 Help button. Paste a <a href="https://console.groq.com/keys" target="_blank" rel="noopener">Groq API key</a> to enable an in-app assistant for software &amp; reporting questions. The key is stored server-side and never shown again.</p>
+            <div id="helpBotForm" class="grid-form"></div>
+            <button id="saveHelpBot" class="btn btn-primary">Save help bot</button>
           </div>
           <div class="card glass">
             <h3>Role passwords</h3>
@@ -225,6 +265,20 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
+
+  <!-- HELP BOT (Groq) -->
+  <button id="helpFab" class="help-fab hidden" title="Ask the help bot" aria-label="Open help bot">💬</button>
+  <div id="helpPanel" class="help-panel hidden">
+    <div class="help-head">
+      <div><strong>Help bot</strong> <span class="muted small">software &amp; reporting</span></div>
+      <button id="helpClose" class="help-close" title="Close">✕</button>
+    </div>
+    <div id="helpLog" class="help-log"></div>
+    <div class="help-input">
+      <input id="helpText" type="text" placeholder="Ask how to do something…" autocomplete="off" />
+      <button id="helpSend" class="btn btn-sm btn-primary">Send</button>
+    </div>
+  </div>
 
   <script src="/app.js"></script>
 </body>

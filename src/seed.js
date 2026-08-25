@@ -1,11 +1,13 @@
 // Seeds the datastore from seed-data.json (extracted from the JW BNGM workbook).
 // Creates default users with per-role passwords. Idempotent unless --force.
+try { require('dotenv').config(); } catch { /* .env optional */ }
 const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const db = require('./db');
 const { ROLES } = require('./auth');
 const roster = require('./roster');
+const clients = require('./clients');
 
 const SEED_FILE = path.join(__dirname, '..', 'seed-data.json');
 
@@ -21,15 +23,17 @@ const DEFAULT_PASSWORDS = {
   perfmkt: 'perfmkt123',
 };
 
-function run() {
+async function run() {
   const force = process.argv.includes('--force');
+  await db.init();
   const store = db.get();
 
   if (store.users.length > 0 && !force) {
     console.log('Datastore already seeded. Use `npm run reset` to wipe and reseed.');
+    await db.close();
     return;
   }
-  if (force) db.reset();
+  if (force) await db.reset();
 
   const seed = JSON.parse(fs.readFileSync(SEED_FILE, 'utf8'));
   const fresh = db.get();
@@ -48,6 +52,9 @@ function run() {
   fresh.settings = {
     assumptions: {
       srRate: seed.assumptions.srRate,
+      midRate: seed.assumptions.midRate != null
+        ? seed.assumptions.midRate
+        : Math.round((seed.assumptions.srRate + seed.assumptions.jrRate) / 2),
       jrRate: seed.assumptions.jrRate,
       srCapacity: seed.assumptions.srCapacity,
       jrCapacity: seed.assumptions.jrCapacity,
@@ -88,24 +95,32 @@ function run() {
   // fall back to the workbook-derived list if that file is empty/missing.
   const rosterPeople = roster.parseRoster();
   const associateSrc = rosterPeople.length ? rosterPeople : seed.associates;
-  fresh.associates = associateSrc.map((a, i) => ({
-    id: i + 1,
-    name: a.name,
-    type: a.type,
-  }));
+  fresh.associates = associateSrc.map((a, i) => {
+    const category = roster.normCategory(a.category != null ? a.category : a.type);
+    return { id: i + 1, name: a.name, category, type: roster.typeFromCategory(category) };
+  });
+  // Authoritative pass: stamp each resource's category from "emp categories.txt".
+  roster.applyCategoriesToStore(fresh);
+
+  // Merge the client list (Book1 → clients.txt) on top of the workbook accounts.
+  const clientsAdded = clients.syncClientsIntoStore(fresh);
 
   fresh.entries = [];
 
-  db.save().then(() => {
-    console.log('Seeded JW BNGM datastore:');
-    console.log(`  ${fresh.accounts.length} accounts, ${fresh.associates.length} associates`);
-    console.log(`  ${fresh.settings.months.length} months, ${fresh.settings.wings.length} wings`);
-    console.log('\nDefault logins (role / password) — change in Settings:');
-    for (const role of Object.keys(ROLES)) {
-      console.log(`  ${ROLES[role].label.padEnd(22)} ${role} / ${DEFAULT_PASSWORDS[role]}`);
-    }
-  });
+  await db.save();
+  console.log('Seeded JW BNGM datastore:');
+  console.log(`  ${fresh.accounts.length} accounts (${clientsAdded} merged from clients.txt), ${fresh.associates.length} associates`);
+  console.log(`  ${fresh.settings.months.length} months, ${fresh.settings.wings.length} wings`);
+  console.log('\nDefault logins (role / password) — change in Settings:');
+  for (const role of Object.keys(ROLES)) {
+    console.log(`  ${ROLES[role].label.padEnd(22)} ${role} / ${DEFAULT_PASSWORDS[role]}`);
+  }
+  await db.close();
 }
 
-run();
+run().catch((err) => {
+  console.error('\n✖ Seed failed:', err.code || '', err.message);
+  console.error('  Check your database settings (.env: DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME).\n');
+  process.exit(1);
+});
 module.exports = { DEFAULT_PASSWORDS };

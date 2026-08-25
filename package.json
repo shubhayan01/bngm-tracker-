@@ -7,14 +7,17 @@
   "scripts": {
     "start": "node server.js",
     "seed": "node src/seed.js",
-    "reset": "node src/seed.js --force"
+    "reset": "node src/seed.js --force",
+    "db:test": "node src/db-test.js"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
+    "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.11.3"
   }
 }
