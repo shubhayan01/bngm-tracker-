@@ -1,0 +1,286 @@
+{
+ "assumptions": {
+  "srRate": 1300.0,
+  "midRate": 1025.0,
+  "jrRate": 750.0,
+  "srCapacity": 150.0,
+  "jrCapacity": 170.0,
+  "contingency": 0.05,
+  "gmMin": 0.28,
+  "gmHealthy": 0.4,
+  "fy": "FY 2026-27"
+ },
+ "accounts": [
+  {
+   "name": "Hero FinCorp",
+   "wing": "SMM"
+  },
+  {
+   "name": "North Point School",
+   "wing": "SMM"
+  },
+  {
+   "name": "eModern Marketing, LLC",
+   "wing": ""
+  },
+  {
+   "name": "Shiprocket Limited",
+   "wing": ""
+  },
+  {
+   "name": "Synup Corporation",
+   "wing": ""
+  },
+  {
+   "name": "Creative Ideaz UK Ltd",
+   "wing": ""
+  },
+  {
+   "name": "MAKEMYTRIP (INDIA) PRIVATE LIMITED",
+   "wing": ""
+  },
+  {
+   "name": "HDFC ERGO General Insurance Company Limited",
+   "wing": ""
+  },
+  {
+   "name": "Univo Education Private Limited",
+   "wing": ""
+  },
+  {
+   "name": "SOCIETY FOR MEDIA ARTS",
+   "wing": ""
+  },
+  {
+   "name": "Grasim Industries - Paints division",
+   "wing": ""
+  },
+  {
+   "name": "Intenim Technologies Pvt Ltd",
+   "wing": ""
+  },
+  {
+   "name": "GetPanda Money Inc",
+   "wing": ""
+  },
+  {
+   "name": "INTELLINET SYSTEMS PRIVATE LIMITED",
+   "wing": ""
+  },
+  {
+   "name": "ORIENT EXCHANGE AND FINANCIAL SERVICES PRIVATE LIMITED",
+   "wing": ""
+  },
+  {
+   "name": "Shriram Finance Limited",
+   "wing": ""
+  },
+  {
+   "name": "VPD LTD.",
+   "wing": ""
+  },
+  {
+   "name": "PRAXIS INFO SOLUTIONS PRIVATE LIMITED",
+   "wing": ""
+  },
+  {
+   "name": "Opus Solutions Private Limited (OSPL)",
+   "wing": ""
+  },
+  {
+   "name": "Rajiv Plastic Industries",
+   "wing": ""
+  },
+  {
+   "name": "THE RUG TRADER",
+   "wing": ""
+  },
+  {
+   "name": "ICICI LOMBARD GENERAL INSURANCE CO LTD",
+   "wing": ""
+  },
+  {
+   "name": "KARDIFY CUSTOMS PRIVATE LIMITED",
+   "wing": ""
+  },
+  {
+   "name": "METRIC VIBES PRIVATE LIMITED",
+   "wing": ""
+  },
+  {
+   "name": "Antara Assisted Care Services Limited",
+   "wing": ""
+  },
+  {
+   "name": "Relu Consultancy",
+   "wing": ""
+  },
+  {
+   "name": "Dotpe Private Limited",
+   "wing": ""
+  },
+  {
+   "name": "COLOPLAST INDIA PVT LTD.",
+   "wing": ""
+  },
+  {
+   "name": "JUSTWORDS CANADA INC",
+   "wing": ""
+  },
+  {
+   "name": "RCS STEEL AND AUTO PVT LTD",
+   "wing": ""
+  },
+  {
+   "name": "Klicpic",
+   "wing": "SMM"
+  },
+  {
+   "name": "Leadership Ladder Academy Pvt Ltd",
+   "wing": ""
+  },
+  {
+   "name": "APTI PLUS ACADEMY FOR CIVIL SERVICES PRIVATE LIMITED",
+   "wing": ""
+  },
+  {
+   "name": "HOLISTIQUE BEAUTY PRODUCTS PRIVATE LIMITED",
+   "wing": ""
+  },
+  {
+   "name": "ROMSONS GROUP PRIVATE LIMITED",
+   "wing": ""
+  },
+  {
+   "name": "TVS Motor Company",
+   "wing": ""
+  },
+  {
+   "name": "ROMSONS PRIME PRIVATE LIMITED",
+   "wing": ""
+  },
+  {
+   "name": "Upgrad Education Pvt Ltd",
+   "wing": ""
+  },
+  {
+   "name": "Sathi International FZ LLC",
+   "wing": ""
+  },
+  {
+   "name": "Whiz Consulting Private Limited",
+   "wing": ""
+  },
+  {
+   "name": "EDU SYNAPSE PVT LTD",
+   "wing": ""
+  },
+  {
+   "name": "DIGNITY SOLTECH PRIVATE LIMITED",
+   "wing": ""
+  },
+  {
+   "name": "INDO INTERNET PRIVATE LIMITED",
+   "wing": ""
+  },
+  {
+   "name": "HERO HOUSING FINANCE LIMITED",
+   "wing": ""
+  },
+  {
+   "name": "ASIAN FOOTWEARS PVT.LTD.",
+   "wing": ""
+  },
+  {
+   "name": "Autovert Technologies Private Limited",
+   "wing": ""
+  },
+  {
+   "name": "LEARNSHERN PRIVATE LIMITED",
+   "wing": ""
+  },
+  {
+   "name": "Hero FinCorp Limited",
+   "wing": ""
+  }
+ ],
+ "associates": [
+  {
+   "name": "Saurav Jha",
+   "type": "Sr. Resource"
+  },
+  {
+   "name": "Anurag Tomer",
+   "type": "Sr. Resource"
+  },
+  {
+   "name": "Rutba Khan",
+   "type": "Sr. Resource"
+  },
+  {
+   "name": "Parth Sharma",
+   "type": "Sr. Resource"
+  },
+  {
+   "name": "Anjali Singh",
+   "type": "Jr. Resource"
+  },
+  {
+   "name": "Jahanvi Raj",
+   "type": "Jr. Resource"
+  },
+  {
+   "name": "Snigdhadeb Guha",
+   "type": "Sr. Resource"
+  },
+  {
+   "name": "Vipin",
+   "type": "Jr. Resource"
+  }
+ ],
+ "jobTypes": [
+  "Content Writing",
+  "Editing & Proofreading",
+  "Copywriting",
+  "Graphic Design",
+  "Video Editing",
+  "Guest Posting",
+  "Link Building",
+  "Performance Mktg",
+  "Web Development",
+  "Others"
+ ],
+ "wings": [
+  "Content Creation",
+  "SEO",
+  "SMM",
+  "Web Dev",
+  "Performance Mktg",
+  "Guest Posting"
+ ],
+ "months": [
+  "Mar-26",
+  "Apr-26",
+  "May-26",
+  "Jun-26",
+  "Jul-26",
+  "Aug-26",
+  "Sep-26",
+  "Oct-26",
+  "Nov-26",
+  "Dec-26",
+  "Jan-27",
+  "Feb-27",
+  "Mar-27"
+ ],
+ "tools": [
+  { "name": "Claude Pro", "description": "AI assistant for research, drafting and analysis.", "cost": 20, "currency": "USD", "department": "SEO", "why": "Speeds up keyword research and content drafting." },
+  { "name": "higgsfield.ai", "description": "AI video / creative generation.", "cost": 30, "currency": "USD", "department": "SMM", "why": "Short-form creative for social campaigns." },
+  { "name": "magnific", "description": "AI image upscaler / enhancer.", "cost": 39, "currency": "USD", "department": "Content Creation", "why": "Enhance imagery for deliverables." },
+  { "name": "Sprout Social", "description": "Social scheduling & analytics suite.", "cost": 249, "currency": "USD", "department": "SMM", "why": "Scheduling and reporting across client channels." },
+  { "name": "Meta Business Suite", "description": "Meta ads & page management.", "cost": 0, "currency": "USD", "department": "SMM", "why": "Manage Facebook/Instagram presence." },
+  { "name": "Canva Pro", "description": "Design & templating tool.", "cost": 15, "currency": "USD", "department": "Content Creation", "why": "Fast branded creatives for all wings." },
+  { "name": "Adobe Creative Cloud", "description": "Professional design & video suite.", "cost": 60, "currency": "USD", "department": "Content Creation", "why": "High-end design and video editing." },
+  { "name": "Grammarly Business", "description": "Writing QA and style checking.", "cost": 15, "currency": "USD", "department": "Content Creation", "why": "Consistency and error-free copy." }
+ ]
+}

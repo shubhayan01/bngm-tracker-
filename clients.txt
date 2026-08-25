@@ -1,0 +1,53 @@
+# Client / customer list (Book1.xlsx). One client per line.
+# Merged into the account list on startup (de-duped by name; never deletes).
+APTI PLUS ACADEMY FOR CIVIL SERVICES PRIVATE LIMITED
+COLOPLAST  INDIA PVT LTD.
+Dotpe Private Limited
+eModern Marketing, LLC
+Grasim Industries - Paints division
+Hero FinCorp Limited
+HERO HOUSING FINANCE LIMITED
+Hi Tours India Pvt Ltd
+ICICI LOMBARD GENERAL INSURANCE CO LTD
+INDIRA IVF HOSPITAL LIMITED
+Intenim Technologies Pvt Ltd
+JUSTWORDS CANADA INC
+KARDIFY CUSTOMS PRIVATE LIMITED
+Klicpic
+MAKEMYTRIP (INDIA) PRIVATE LIMITED
+NuMantra Technologies Inc
+PRAXIS INFO SOLUTIONS PRIVATE LIMITED
+RCS STEEL AND AUTO PVT LTD
+ROMSONS GROUP PRIVATE LIMITED
+ROMSONS PRIME PRIVATE LIMITED
+Shiprocket Limited
+TALLY SOLUTIONS PRIVATE LIMITED
+TVS Motor Company
+Upgrad Education Pvt Ltd
+Whiz Consulting Private Limited
+Gulf Air Holidays W.L.L
+Andersen Tax Limited
+ASIAN FOOTWEARS PRIVATE LIMITED
+LRZ INNOVATIONS PRIVATE LIMITED
+VALDORİ SAĞLIK TURİZMİ ANONİM ŞİRKETİ
+BLAZE BRANDING & MARKETING (OPC) PRIVATE LIMITED
+Insta Exhibitions Pvt. Ltd.
+Miul Meds Pvt.Ltd
+CARE DEAL ADVERTISERS
+Andersen Tax Limited.
+Enterminal Market Private Limited
+ECS Fin Inc.
+Drona Education Limited
+ICICI Prudential Mutual Fund
+SUNBRIDGE CONSUMERS PRIVATE LIMITED
+Neurostimulation Medtech Private Limited
+ADPT AI TECHNOLOGY PRIVATE LIMITED
+Fatakpay Digital Private Limited
+Freeze My Tour
+Kheti Kisaan Mandi Bhav
+Atmos Care Private Limited
+Go Insure India Insurance Broking Private Limited
+Esthetica Spa & Salon Resources Private Limited
+COSMOS PUMPS PRIVATE LIMITED
+Manipal Fintech Private Limited
+Imagine Every Inch LLP

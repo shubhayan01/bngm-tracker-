@@ -1,4 +1,5 @@
 try { require('dotenv').config(); } catch { /* .env is optional; real env vars still work */ }
+const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -930,13 +931,14 @@ const DEFAULT_PASSWORDS = {
   social: 'social123', webdev: 'webdev123', perfmkt: 'perfmkt123',
 };
 
-// First-ever boot with an empty datastore (e.g. a fresh free-tier deploy where
-// `npm run seed` was never run and the sensitive seed files are not in the repo):
-// create the default role logins plus a minimal, NON-SENSITIVE baseline config so
-// the app is immediately usable and you can log in. No client names, employee
-// details, or real bill rates are embedded here — accounts and resources are added
-// from the UI, and the rate/GM figures below are neutral placeholders the `super`
-// user changes in Settings → Assumptions.
+// First-ever boot with an empty datastore (e.g. a fresh deploy where `npm run
+// seed` was never run). Creates the default role logins plus the app config so
+// it is immediately usable and you can log in. When `seed-data.json` is present
+// (committed, or provided as a Render Secret File) the real assumptions, months,
+// wings, job types, tools and accounts are loaded from it; otherwise we fall back
+// to a minimal, non-sensitive placeholder baseline. Team roster + employee
+// categories + the client-name list are then merged by migrate() from
+// "emp details.txt" / "emp categories.txt" / "clients.txt" when those files exist.
 function bootstrapEmptyStore(store) {
   store.users = Object.keys(ROLES).map((role, i) => ({
     id: i + 1,
@@ -944,29 +946,84 @@ function bootstrapEmptyStore(store) {
     passwordHash: bcrypt.hashSync(DEFAULT_PASSWORDS[role] || role + '123', 10),
   }));
 
-  const months = ['Mar-26', 'Apr-26', 'May-26', 'Jun-26', 'Jul-26', 'Aug-26',
-    'Sep-26', 'Oct-26', 'Nov-26', 'Dec-26', 'Jan-27', 'Feb-27', 'Mar-27'];
-  const toolPool = {};
-  for (const m of months) toolPool[m] = 0;
+  let seed = null;
+  try {
+    seed = JSON.parse(fs.readFileSync(path.join(__dirname, 'seed-data.json'), 'utf8'));
+  } catch { seed = null; }
 
-  store.settings = {
-    // Placeholder rates/thresholds — NOT the real figures. Edit in Assumptions.
-    assumptions: {
-      srRate: 1000, midRate: 750, jrRate: 500,
-      srCapacity: 150, jrCapacity: 170, resourceMonthlyHours: 180,
-      contingency: 0.05, gmMin: 0.28, gmHealthy: 0.40, fy: 'FY 2026-27',
-    },
-    months,
-    wings: ['Content Creation', 'SEO', 'SMM', 'Web Dev', 'Performance Mktg', 'Guest Posting'],
-    jobTypes: ['Content Writing', 'Editing & Proofreading', 'Copywriting', 'Graphic Design',
-      'Video Editing', 'Guest Posting', 'Link Building', 'Performance Mktg', 'Web Development', 'Others'],
-    toolPool,
-    tools: [],
-    toolBudgets: {},
-  };
+  if (seed) {
+    // Full seed — mirrors src/seed.js so a boot-time seed matches `npm run seed`.
+    const toolPool = {};
+    for (const m of seed.months) toolPool[m] = 0;
+    store.settings = {
+      assumptions: {
+        srRate: seed.assumptions.srRate,
+        midRate: seed.assumptions.midRate != null
+          ? seed.assumptions.midRate
+          : Math.round((seed.assumptions.srRate + seed.assumptions.jrRate) / 2),
+        jrRate: seed.assumptions.jrRate,
+        srCapacity: seed.assumptions.srCapacity,
+        jrCapacity: seed.assumptions.jrCapacity,
+        resourceMonthlyHours: seed.assumptions.resourceMonthlyHours || 180,
+        contingency: seed.assumptions.contingency,
+        gmMin: seed.assumptions.gmMin,
+        gmHealthy: seed.assumptions.gmHealthy,
+        fy: seed.assumptions.fy,
+      },
+      months: seed.months,
+      wings: seed.wings,
+      jobTypes: seed.jobTypes,
+      toolPool,
+      tools: (seed.tools || []).map((t, i) => ({
+        id: i + 1,
+        name: t.name,
+        description: t.description || '',
+        cost: t.cost || 0,
+        currency: t.currency || 'USD',
+        department: t.department || t.category || 'General',
+        why: t.why || '',
+        startDate: t.startDate || '',
+        stopDate: t.stopDate || '',
+        active: t.active !== undefined ? t.active : true,
+      })),
+      toolBudgets: {},
+    };
+    store.accounts = (seed.accounts || []).map((a, i) => ({
+      id: i + 1,
+      name: a.name,
+      wing: a.wing || '',
+      budgetGM: seed.assumptions.gmHealthy,
+      active: true,
+    }));
+    // Fallback roster; migrate() rebuilds this from "emp details.txt" when present.
+    store.associates = (seed.associates || []).map((a, i) => {
+      const category = roster.normCategory(a.category != null ? a.category : a.type);
+      return { id: i + 1, name: a.name, category, type: roster.typeFromCategory(category) };
+    });
+  } else {
+    // Placeholder baseline — NOT the real figures. Edit in Settings → Assumptions.
+    const months = ['Mar-26', 'Apr-26', 'May-26', 'Jun-26', 'Jul-26', 'Aug-26',
+      'Sep-26', 'Oct-26', 'Nov-26', 'Dec-26', 'Jan-27', 'Feb-27', 'Mar-27'];
+    const toolPool = {};
+    for (const m of months) toolPool[m] = 0;
+    store.settings = {
+      assumptions: {
+        srRate: 1000, midRate: 750, jrRate: 500,
+        srCapacity: 150, jrCapacity: 170, resourceMonthlyHours: 180,
+        contingency: 0.05, gmMin: 0.28, gmHealthy: 0.40, fy: 'FY 2026-27',
+      },
+      months,
+      wings: ['Content Creation', 'SEO', 'SMM', 'Web Dev', 'Performance Mktg', 'Guest Posting'],
+      jobTypes: ['Content Writing', 'Editing & Proofreading', 'Copywriting', 'Graphic Design',
+        'Video Editing', 'Guest Posting', 'Link Building', 'Performance Mktg', 'Web Development', 'Others'],
+      toolPool,
+      tools: [],
+      toolBudgets: {},
+    };
+    store.accounts = [];
+    store.associates = [];
+  }
 
-  store.accounts = [];
-  store.associates = [];
   store.entries = [];
   store.meta = store.meta || {};
 }
@@ -978,7 +1035,8 @@ function migrate() {
   if (!store.users || store.users.length === 0) {
     bootstrapEmptyStore(store);
     dirty = true;
-    console.log('  ✓ first run: seeded 8 role logins + baseline config (no client/staff data — add via the UI)');
+    const src = fs.existsSync(path.join(__dirname, 'seed-data.json')) ? 'seed-data.json' : 'placeholder baseline';
+    console.log(`  ✓ first run: seeded 8 role logins + config from ${src} (${store.accounts.length} accounts)`);
   }
 
   // 1) a login row for every role we now support

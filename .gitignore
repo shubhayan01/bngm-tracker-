@@ -12,9 +12,6 @@ logs/
 # raw source workbook holds the same financial data we already keep out of git
 *.xlsx
 
-# internal financial / employee data — keep out of the public repo.
-# Provide these on the server (e.g. Render Secret Files) instead, then run `npm run seed`.
-seed-data.json
-clients.txt
-emp categories.txt
-emp details.txt
+# NOTE: seed-data.json, clients.txt, emp details.txt and emp categories.txt hold
+# real client/employee/financial data and are committed to this repo on purpose
+# (see chat 2026-08-25). This repo is public, so that data is publicly visible.
