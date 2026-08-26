@@ -13,6 +13,14 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': 
 const inr = (n) => '₹' + Math.round(Number(n) || 0).toLocaleString('en-IN');
 const pct = (n) => (Number(n) * 100).toFixed(1) + '%';
 
+// A focused <input type=number> changes its value on mouse-wheel, so scrolling the
+// page was silently nudging figures. Blur the field on wheel — the page still
+// scrolls, but the number is left alone (user, 2026-08-26).
+document.addEventListener('wheel', () => {
+  const a = document.activeElement;
+  if (a && a.tagName === 'INPUT' && a.type === 'number') a.blur();
+}, { passive: true });
+
 // ---- live USD conversion (rate fetched from server / frankfurter.app) ----
 const fxRate = () => (state.boot && state.boot.fx && Number(state.boot.fx.rate)) || 87;
 const usd = (inrAmt) => {
@@ -262,6 +270,39 @@ function startEntry() {
   $$('#e_mode button').forEach((b) => (b.onclick = () => { entry.mode = b.dataset.mode; setModeButtons(); afterHeadChange(); }));
 
   afterHeadChange();
+  const sfClear = $('#sfClear');
+  if (sfClear) sfClear.onclick = () => { state.saveFeed = []; renderSaveFeed(); };
+  renderSaveFeed();
+}
+
+// Live "recent updates" feed (user, 2026-08-26). Each saved entry is logged above the
+// live costing panel — client name, month/mode, planned & actual revenue — so a long
+// data-entry session (e.g. 25 clients back to back) shows exactly what has gone in.
+function renderSaveFeed() {
+  const wrap = $('#saveFeed'); const list = $('#saveFeedList');
+  if (!wrap || !list) return;
+  const items = state.saveFeed || [];
+  wrap.classList.toggle('hidden', !items.length);
+  list.innerHTML = items.map((it) => `
+    <div class="sf-item">
+      <div class="sf-top"><span class="sf-name">${esc(it.name)}${it.wing ? ` <span class="muted small">· ${esc(it.wing)}</span>` : ''}</span><span class="sf-when">${esc(it.month)} · ${it.mode === 'planned' ? 'Plan' : 'Actual'}</span></div>
+      <div class="sf-figs"><span>Plan rev <b>${inr(it.planRev)}</b></span><span>Actual rev <b>${inr(it.actualRev)}</b></span></div>
+    </div>`).join('');
+}
+function logSaveFeed() {
+  const acc = state.boot.accounts.find((a) => a.id === entry.accountId);
+  state.saveFeed = state.saveFeed || [];
+  state.saveFeed.unshift({
+    name: entry.clientName || (acc && acc.name) || '—',
+    wing: acc ? acc.wing : '',
+    month: entry.month,
+    mode: entry.mode,
+    planRev: Number(entry.data.revPlanned) || 0,
+    actualRev: Number(entry.data.revActual) || 0,
+    at: Date.now(),
+  });
+  state.saveFeed = state.saveFeed.slice(0, 40);
+  renderSaveFeed();
 }
 
 // Populate the Service / Department select from the chosen client.
@@ -283,7 +324,7 @@ function fillServiceSelect() {
   if (isSuper()) {
     (state.boot.wings || []).forEach((w) => {
       if (byWing[w]) opts.push(`<option value="${byWing[w].id}">${esc(w)}</option>`);
-      else opts.push(`<option value="new:${esc(w)}">${esc(w)} — add</option>`);
+      else opts.push(`<option value="new:${esc(w)}">${esc(w)}</option>`);
     });
   } else {
     accs.filter((a) => a.wing).forEach((a) => opts.push(`<option value="${a.id}">${esc(a.wing)}</option>`));
@@ -687,6 +728,7 @@ async function saveEntry() {
     if (r.capacity) entry.capacity = r.capacity;
     if (r.usageOther) entry.usageOther = r.usageOther;
     normalizeEntryData(entry.data);
+    logSaveFeed();
     const c = r.computed;
     const stName = { healthy: '✅ Healthy', review: '⚠️ Review', atrisk: '🔴 At Risk', none: '—' }[c.status];
     renderPreview(c);
@@ -792,8 +834,24 @@ async function loadDashboard() {
   renderMonthly(d.monthly);
   setupPlanActual(d.comparison, d.comparisonYtd); // Plan vs Actual w/ built-in month select
   setupClientCompare(d.comparisonByClient); // Plan vs Actual per customer
+  setupResources(d.resourceByClient, d.resourceByPerson); // Resources plan vs actual + Asana
+  renderToolsReport();                     // Tools budget vs actual spend
   renderWings(d.wingSummary);
   setupRanking(d.ranking);
+  wireReportFilter();                      // show one report at a time
+}
+
+// ---- report picker (user, 2026-08-26) ----
+// Reports were one long scroll; now a pill bar at the top shows a single report at a
+// time. Everything is still rendered on load — the filter just toggles visibility.
+function applyReport(name) {
+  state.reportTab = name;
+  $$('#reportFilter .rf-pill').forEach((b) => b.classList.toggle('active', b.dataset.report === name));
+  $$('#view-dashboard .report-block').forEach((b) => { b.hidden = b.dataset.report !== name; });
+}
+function wireReportFilter() {
+  $$('#reportFilter .rf-pill').forEach((b) => (b.onclick = () => applyReport(b.dataset.report)));
+  applyReport(state.reportTab || 'overview');
 }
 
 // ---- drill-down details (user, 2026-08-24) ----
@@ -826,6 +884,19 @@ function varCell(v, asPct) {
   const txt = asPct ? sign + (v * 100).toFixed(1) + '%' : sign + inr(v).replace('₹', '₹');
   return `<td ${cls}>${txt}</td>`;
 }
+// Cost / hours variance = actual − plan, where spending (or booking) LESS than planned
+// is the good outcome, so the colours are the mirror of revenue variance.
+function varCostCell(v) {
+  const cls = v <= 0 ? 'style="color:var(--green)"' : 'style="color:var(--red)"';
+  const sign = v > 0 ? '+' : (v < 0 ? '−' : '');
+  return `<td ${cls}>${sign}${inr(Math.abs(v))}</td>`;
+}
+function varHrsCell(v) {
+  const cls = v <= 0 ? 'style="color:var(--green)"' : 'style="color:var(--red)"';
+  const sign = v > 0 ? '+' : (v < 0 ? '−' : '');
+  return `<td ${cls}>${sign}${hrsFmt(Math.abs(v))}</td>`;
+}
+const hrsFmt = (n) => (Math.round((Number(n) || 0) * 10) / 10).toLocaleString('en-IN') + ' hr';
 
 // ---- Plan vs Actual with a built-in month selector (user, 2026-08-21) ----
 // Tick any months to total just those; none ticked = the full year. The KPI strip,
@@ -941,6 +1012,115 @@ function renderClientCompare() {
   });
   $('#clientCmpTable').innerHTML = html + '</tbody>';
   wireDetailButtons($('#clientCmpTable'));
+}
+
+// ---- Resources: planned vs actual hours (user, 2026-08-26) ----
+// Two scopes: "By client" (booked hours + ₹ cost per client) and "By resource"
+// (each person's planned vs actual load, with a link to their Asana assignments).
+function setupResources(byClient, byPerson) {
+  state.resByClient = byClient || [];
+  state.resByPerson = byPerson || [];
+  state.resScope = state.resScope || 'client';
+  const seg = $('#resScope');
+  if (seg) {
+    $$('button', seg).forEach((b) => {
+      b.classList.toggle('active', b.dataset.scope === state.resScope);
+      b.onclick = () => {
+        state.resScope = b.dataset.scope;
+        $$('button', seg).forEach((x) => x.classList.toggle('active', x === b));
+        renderResources();
+      };
+    });
+  }
+  const search = $('#resSearch');
+  if (search) search.oninput = renderResources;
+  renderResources();
+}
+
+function renderResources() {
+  const table = $('#resourceTable');
+  if (!table) return;
+  const scope = state.resScope || 'client';
+  const q = (($('#resSearch') && $('#resSearch').value) || '').trim().toLowerCase();
+
+  if (scope === 'client') {
+    const rows = (state.resByClient || []).filter((r) => !q || String(r.name || '').toLowerCase().includes(q));
+    const head = ['Client', 'Plan hrs', 'Actual hrs', 'Δ hrs', 'Plan cost', 'Actual cost', 'Δ cost', ''];
+    let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l sticky-col' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
+    if (!rows.length) html += `<tr><td colspan="8" class="l muted">${(state.resByClient || []).length ? 'No clients match the filter.' : 'No resource hours logged yet.'}</td></tr>`;
+    let ph = 0, ah = 0, pc = 0, ac = 0;
+    rows.forEach((r) => {
+      ph += r.planHours; ah += r.actualHours; pc += r.planCost; ac += r.actualCost;
+      html += `<tr><td class="l sticky-col">${hoverCell(esc(r.name), 'client', r.name)}</td>` +
+        `<td>${hrsFmt(r.planHours)}</td><td>${hrsFmt(r.actualHours)}</td>${varHrsCell(r.hoursVariance)}` +
+        `<td>${inr(r.planCost)}</td><td>${inr(r.actualCost)}</td>${varCostCell(r.costVariance)}` +
+        `<td></td></tr>`;
+    });
+    if (rows.length) {
+      html += `<tr class="row-total"><td class="l sticky-col"><b>Total</b></td>` +
+        `<td>${hrsFmt(ph)}</td><td>${hrsFmt(ah)}</td>${varHrsCell(ah - ph)}` +
+        `<td>${inr(pc)}</td><td>${inr(ac)}</td>${varCostCell(ac - pc)}<td></td></tr>`;
+    }
+    table.innerHTML = html + '</tbody>';
+    wireDetailButtons(table);
+  } else {
+    const rows = (state.resByPerson || []).filter((r) => !q || String(r.name || '').toLowerCase().includes(q));
+    const showCat = isSuper();
+    const head = ['Resource'].concat(showCat ? ['Category'] : []).concat(['Plan hrs', 'Actual hrs', 'Δ hrs', 'Asana']);
+    const cols = head.length;
+    let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l sticky-col' : (i === 1 && showCat ? 'l' : '')}">${h}</th>`).join('') + '</tr></thead><tbody>';
+    if (!rows.length) html += `<tr><td colspan="${cols}" class="l muted">${(state.resByPerson || []).length ? 'No resources match the filter.' : 'No resource hours logged yet.'}</td></tr>`;
+    rows.forEach((r) => {
+      const catCell = showCat
+        ? `<td class="l">${r.category ? `<span class="cat-tag cat-${String(r.category).toLowerCase()}">${esc(r.category)}</span>` : ''}</td>`
+        : '';
+      html += `<tr><td class="l sticky-col">${esc(r.name)}</td>${catCell}` +
+        `<td>${hrsFmt(r.planHours)}</td><td>${hrsFmt(r.actualHours)}</td>${varHrsCell(r.hoursVariance)}` +
+        `<td><button type="button" class="btn btn-sm btn-ghost res-asana-rep" data-email="${esc(r.name)}" title="Open Asana assignments for ${esc(r.name)}">📋 Asana</button></td></tr>`;
+    });
+    table.innerHTML = html + '</tbody>';
+    $$('.res-asana-rep', table).forEach((b) => (b.onclick = () => window.open(asanaUrl(b.dataset.email), '_blank', 'noopener')));
+  }
+}
+
+// ---- Tools: budget vs actual monthly spend, per department (user, 2026-08-26) ----
+// Built client-side from the tools list + per-department budgets already in bootstrap.
+function renderToolsReport() {
+  const table = $('#toolReportTable');
+  if (!table) return;
+  const tools = state.boot.tools || [];
+  const budgets = (state.boot && state.boot.toolBudgets) || {};
+  const byDept = {};
+  tools.filter((t) => t.active !== false).forEach((t) => {
+    if (t.common && t.deptCosts && Object.keys(t.deptCosts).length) {
+      for (const [d, amt] of Object.entries(t.deptCosts)) byDept[d] = (byDept[d] || 0) + amtInr(amt, t.currency);
+    } else {
+      const d = t.department || 'General';
+      byDept[d] = (byDept[d] || 0) + toolMonthlyInr(t);
+    }
+  });
+  const names = [...new Set([...Object.keys(byDept), ...Object.keys(budgets)])].sort();
+  const head = ['Department', 'Monthly budget', 'Actual / mo', 'Δ (budget − actual)', 'Annual budget', 'Annual actual'];
+  let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l sticky-col' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
+  if (!names.length) html += `<tr><td colspan="6" class="l muted">No tools or budgets yet.</td></tr>`;
+  let tb = 0, ta = 0;
+  names.forEach((d) => {
+    const budget = Number(budgets[d]) || 0; const actual = byDept[d] || 0; tb += budget; ta += actual;
+    const diff = budget - actual; const over = budget > 0 && actual > budget;
+    const diffCls = diff >= 0 ? 'style="color:var(--green)"' : 'style="color:var(--red)"';
+    html += `<tr><td class="l sticky-col">${esc(d)}</td>` +
+      `<td>${budget ? inr(budget) : '—'}</td><td>${inr(actual)}</td>` +
+      `<td ${diffCls}>${budget ? ((diff < 0 ? '−' : '') + inr(Math.abs(diff)) + (over ? ' ⚠' : '')) : '—'}</td>` +
+      `<td>${budget ? inr(budget * 12) : '—'}</td><td>${inr(actual * 12)}</td></tr>`;
+  });
+  if (names.length) {
+    const td = tb - ta;
+    html += `<tr class="row-total"><td class="l sticky-col"><b>Total</b></td>` +
+      `<td>${tb ? inr(tb) : '—'}</td><td>${inr(ta)}</td>` +
+      `<td style="color:var(--${td >= 0 ? 'green' : 'red'})">${tb ? ((td < 0 ? '−' : '') + inr(Math.abs(td))) : '—'}</td>` +
+      `<td>${tb ? inr(tb * 12) : '—'}</td><td>${inr(ta * 12)}</td></tr>`;
+  }
+  table.innerHTML = html + '</tbody>';
 }
 
 function renderKpis(y) {
@@ -1059,17 +1239,41 @@ function renderDetail(d) {
     host.innerHTML = totals + '<p class="muted" style="margin-top:16px">No entries recorded here yet.</p>';
     return;
   }
-  const cards = d.items.map((it) => detailCard(it, d.type)).join('');
-  host.innerHTML = totals + `<div class="detail-cards">${cards}</div>`;
+
+  // Row/column table (user, 2026-08-26): one row per entry with the first column
+  // (month or client) pinned. Each row expands (▸) to show the resources, outsourcing
+  // and notes behind it, Plan vs Actual.
+  const firstLabel = d.type === 'client' ? 'Month · Dept' : 'Client · Dept';
+  const head = [firstLabel, 'Plan Rev', 'Act Rev', 'Plan Cost', 'Act Cost', 'Plan GP', 'Act GP', 'Plan GM', 'Act GM'];
+  let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l sticky-col' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
+  d.items.forEach((it, idx) => {
+    const first = d.type === 'client' ? `${esc(it.month)} · ${esc(it.wing || '—')}` : `${esc(it.name)} · ${esc(it.wing || '—')}`;
+    const pp = it.plan || {}, aa = it.actual || {};
+    html += `<tr class="d-main"><td class="l sticky-col"><button type="button" class="d-exp" data-idx="${idx}" title="Show resources, outsourcing & notes">▸</button> ${first}</td>` +
+      `<td>${inr(pp.revenue)}</td><td>${inr(aa.revenue)}</td>` +
+      `${costCell(pp.totalCost)}${costCell(aa.totalCost)}` +
+      `<td>${inr(pp.grossProfit)}</td><td>${inr(aa.grossProfit)}</td>` +
+      `<td>${pct(pp.gm)}</td><td>${pct(aa.gm)}</td></tr>`;
+    html += `<tr class="d-sub hidden" data-sub="${idx}"><td colspan="9" class="l">${detailSub(it)}</td></tr>`;
+  });
+  html += `<tr class="row-total"><td class="l sticky-col"><b>Total</b></td>` +
+    `<td>${inr(p.revenue)}</td><td>${inr(a.revenue)}</td>` +
+    `${costCell(p.totalCost)}${costCell(a.totalCost)}` +
+    `<td>${inr(p.grossProfit)}</td><td>${inr(a.grossProfit)}</td>` +
+    `<td>${pct(p.gm)}</td><td>${pct(a.gm)}</td></tr>`;
+
+  host.innerHTML = totals + `<div class="table-scroll glass" style="margin-top:16px"><table class="data detail-table">${html}</tbody></table></div>`;
+  $$('.d-exp', host).forEach((b) => (b.onclick = () => {
+    const sub = host.querySelector(`tr[data-sub="${b.dataset.idx}"]`);
+    if (!sub) return;
+    const open = sub.classList.toggle('hidden') === false;
+    b.textContent = open ? '▾' : '▸';
+  }));
 }
 
-function detailCard(it, type) {
-  const title = type === 'client' ? `${esc(it.month)} · ${esc(it.wing || '—')}` : `${esc(it.name)} · ${esc(it.wing || '—')}`;
-  const p = it.plan || {}, a = it.actual || {};
-  const line = (label, plan, actual, asPct, cost) => {
-    const fmt = (v) => asPct ? pct(v) : (cost ? costSpan(v) : inr(v));
-    return `<div class="prow"><span>${label}</span><span class="d-two"><span class="plan">${fmt(plan)}</span><span class="act">${fmt(actual)}</span></span></div>`;
-  };
+// The plan-vs-actual breakdown (resources / outsourcing / notes) shown under an
+// expanded detail row.
+function detailSub(it) {
   const resList = (arr) => (arr && arr.length)
     ? arr.map((r) => `<div class="pr-line"><span>${esc(r.name)}${(isSuper() && r.category) ? ` <span class="cat-tag cat-${String(r.category).toLowerCase()}">${esc(r.category)}</span>` : ''}</span><span class="val">${r.hours} hr</span></div>`).join('')
     : '<div class="muted small">None</div>';
@@ -1077,29 +1281,16 @@ function detailCard(it, type) {
     ? arr.map((o) => `<div class="pr-line"><span>${esc(o.jobType || 'Others')}</span><span class="val">${inr(o.cost)}</span></div>`).join('')
     : '<div class="muted small">None</div>';
   const notes = (t) => t ? `<div class="d-notes">${esc(t)}</div>` : '<div class="muted small">—</div>';
-  return `<div class="detail-card glass">
-    <div class="dc-head">${title}</div>
-    <div class="dc-figs">
-      <div class="d-two-head"><span></span><span class="d-two"><span class="plan">Plan</span><span class="act">Actual</span></span></div>
-      ${line('Revenue', p.revenue, a.revenue)}
-      ${line('Manpower', p.manpower, a.manpower, false, true)}
-      ${line('Outsourcing', p.outsourcing, a.outsourcing, false, true)}
-      ${line('Tool share', p.toolShare, a.toolShare, false, true)}
-      ${line('Total cost', p.totalCost, a.totalCost, false, true)}
-      ${line('Gross profit', p.grossProfit, a.grossProfit)}
-      ${line('Gross margin', p.gm, a.gm, true)}
+  return `<div class="dc-cols">
+    <div class="dc-col">
+      <div class="pr-sub">Planned resources</div>${resList(it.resourcesPlan)}
+      <div class="pr-sub">Planned outsourcing</div>${outList(it.outsourcingPlan)}
+      <div class="pr-sub">Planned notes</div>${notes(it.notesPlan)}
     </div>
-    <div class="dc-cols">
-      <div class="dc-col">
-        <div class="pr-sub">Planned resources</div>${resList(it.resourcesPlan)}
-        <div class="pr-sub">Planned outsourcing</div>${outList(it.outsourcingPlan)}
-        <div class="pr-sub">Planned notes</div>${notes(it.notesPlan)}
-      </div>
-      <div class="dc-col">
-        <div class="pr-sub">Actual resources</div>${resList(it.resourcesActual)}
-        <div class="pr-sub">Actual outsourcing</div>${outList(it.outsourcingActual)}
-        <div class="pr-sub">Actual notes</div>${notes(it.notesActual)}
-      </div>
+    <div class="dc-col">
+      <div class="pr-sub">Actual resources</div>${resList(it.resourcesActual)}
+      <div class="pr-sub">Actual outsourcing</div>${outList(it.outsourcingActual)}
+      <div class="pr-sub">Actual notes</div>${notes(it.notesActual)}
     </div>
   </div>`;
 }

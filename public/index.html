@@ -99,6 +99,13 @@
             </div>
           </div>
           <aside class="preview-panel glass">
+            <div id="saveFeed" class="save-feed hidden">
+              <div class="sf-head">
+                <strong>Recent updates</strong>
+                <button id="sfClear" type="button" class="sf-clear" title="Clear this list">clear</button>
+              </div>
+              <div id="saveFeedList" class="sf-list"></div>
+            </div>
             <h3>Live costing</h3>
             <div id="preview" class="preview">
               <p class="muted">Start an entry — figures update as you fill.</p>
@@ -123,45 +130,92 @@
           </div>
         </div>
 
-        <h3>Portfolio KPIs (YTD, selected view)</h3>
-        <div id="dashKpis" class="kpi-row"></div>
-        <h3>Monthly portfolio snapshot</h3>
-        <div class="table-scroll glass"><table id="monthlyTable" class="data"></table></div>
+        <!-- Report picker — one report at a time instead of one long scroll -->
+        <nav class="report-filter" id="reportFilter">
+          <button class="rf-pill active" data-report="overview">📈 Overview</button>
+          <button class="rf-pill" data-report="planactual">🎯 Plan vs Actual</button>
+          <button class="rf-pill" data-report="customer">🏢 By Customer</button>
+          <button class="rf-pill" data-report="resources">👥 Resources</button>
+          <button class="rf-pill" data-report="tools">🧰 Tools</button>
+          <button class="rf-pill" data-report="ranking">🏆 Wings &amp; Ranking</button>
+        </nav>
 
-        <div class="view-head" style="margin-top:22px">
-          <h3 style="margin:0">Plan vs Actual</h3>
-          <div class="controls">
-            <span class="muted small">Pick months to total — none = full year.</span>
-            <button id="cmpMonthsClear" class="btn btn-ghost btn-sm">All months</button>
-          </div>
+        <!-- Overview -->
+        <div class="report-block" data-report="overview">
+          <h3>Portfolio KPIs (YTD, selected view)</h3>
+          <div id="dashKpis" class="kpi-row"></div>
+          <h3>Monthly portfolio snapshot</h3>
+          <div class="table-scroll glass"><table id="monthlyTable" class="data"></table></div>
         </div>
-        <div id="cmpMonthsPick" class="month-pick"></div>
-        <div id="cmpScope" class="muted small" style="margin:-4px 0 10px"></div>
-        <div id="cmpKpis" class="cmp-row"></div>
-        <div class="table-scroll glass"><table id="cmpTable" class="data"></table></div>
 
-        <div class="view-head" style="margin-top:22px">
-          <h3 style="margin:0">Plan vs Actual by customer (YTD)</h3>
-          <div class="controls">
-            <input id="clientCmpSearch" class="rank-search" type="search" placeholder="Filter by client name…" />
+        <!-- Plan vs Actual (monthly) -->
+        <div class="report-block" data-report="planactual" hidden>
+          <div class="view-head">
+            <h3 style="margin:0">Plan vs Actual — revenue, cost &amp; margin</h3>
+            <div class="controls">
+              <span class="muted small">Pick months to total — none = full year.</span>
+              <button id="cmpMonthsClear" class="btn btn-ghost btn-sm">All months</button>
+            </div>
           </div>
+          <div id="cmpMonthsPick" class="month-pick"></div>
+          <div id="cmpScope" class="muted small" style="margin:-4px 0 10px"></div>
+          <div id="cmpKpis" class="cmp-row"></div>
+          <div class="table-scroll glass"><table id="cmpTable" class="data"></table></div>
         </div>
-        <p class="muted small" style="margin:-6px 0 10px">Planned vs actual for each client, summed across every department and month. Hover a client to open its full breakdown.</p>
-        <div class="table-scroll glass"><table id="clientCmpTable" class="data"></table></div>
 
-        <h3>Wing / department summary (YTD)</h3>
-        <div class="table-scroll glass"><table id="wingTable" class="data"></table></div>
-
-        <div class="view-head" style="margin-top:22px">
-          <h3 style="margin:0">Account ranking (YTD, by GM%)</h3>
-          <div class="controls">
-            <label>Department
-              <select id="rankWingFilter"><option value="">All departments</option></select>
-            </label>
-            <input id="rankSearch" class="rank-search" type="search" placeholder="Filter by client name…" />
+        <!-- Plan vs Actual by customer -->
+        <div class="report-block" data-report="customer" hidden>
+          <div class="view-head">
+            <h3 style="margin:0">Plan vs Actual by customer (YTD)</h3>
+            <div class="controls">
+              <input id="clientCmpSearch" class="rank-search" type="search" placeholder="Filter by client name…" />
+            </div>
           </div>
+          <p class="muted small" style="margin:-6px 0 10px">Planned vs actual for each client, summed across every department and month. Hover a client to open its full breakdown.</p>
+          <div class="table-scroll glass"><table id="clientCmpTable" class="data"></table></div>
         </div>
-        <div class="table-scroll glass"><table id="rankTable" class="data"></table></div>
+
+        <!-- Resources (planned vs actual hours + Asana) -->
+        <div class="report-block" data-report="resources" hidden>
+          <div class="view-head">
+            <h3 style="margin:0">Resources — planned vs actual</h3>
+            <div class="controls">
+              <div class="seg" id="resScope">
+                <button type="button" class="active" data-scope="client">By client</button>
+                <button type="button" data-scope="person">By resource</button>
+              </div>
+              <input id="resSearch" class="rank-search" type="search" placeholder="Filter…" />
+            </div>
+          </div>
+          <p class="muted small" style="margin:-6px 0 10px">Planned vs actual booked hours across every department and month. Switch to <b>By resource</b> to see each person's load and open their Asana assignments.</p>
+          <div class="table-scroll glass"><table id="resourceTable" class="data"></table></div>
+        </div>
+
+        <!-- Tools (budget vs actual spend) -->
+        <div class="report-block" data-report="tools" hidden>
+          <div class="view-head">
+            <h3 style="margin:0">Tools — budget vs actual spend</h3>
+          </div>
+          <p class="muted small" style="margin:-6px 0 10px">Monthly tool budget per department (set under Assumptions) vs the actual recurring spend of active tools. Stopped tools are excluded from the monthly figure.</p>
+          <div class="table-scroll glass"><table id="toolReportTable" class="data"></table></div>
+        </div>
+
+        <!-- Wings & Ranking -->
+        <div class="report-block" data-report="ranking" hidden>
+          <h3>Wing / department summary (YTD)</h3>
+          <div class="table-scroll glass"><table id="wingTable" class="data"></table></div>
+
+          <div class="view-head" style="margin-top:22px">
+            <h3 style="margin:0">Account ranking (YTD, by GM%)</h3>
+            <div class="controls">
+              <label>Department
+                <select id="rankWingFilter"><option value="">All departments</option></select>
+              </label>
+              <input id="rankSearch" class="rank-search" type="search" placeholder="Filter by client name…" />
+            </div>
+          </div>
+          <div class="table-scroll glass"><table id="rankTable" class="data"></table></div>
+        </div>
       </section>
 
       <!-- TOOLS VIEW -->

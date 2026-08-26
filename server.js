@@ -734,7 +734,52 @@ app.get('/api/dashboard', auth, (req, res) => {
     gmVariance: cmpActual.gm - cmpPlan.gm,
   };
 
-  res.json({ mode, months: s.months, ytd, monthly, wingSummary, ranking, comparison, comparisonByClient, comparisonYtd });
+  // 5) Resources plan vs actual (user, 2026-08-26). Per client and per resource:
+  // planned vs actual booked hours (and ₹ cost), summed across every department +
+  // month. Powers the Resources report and its Asana links (people are keyed by email).
+  const assocByIdD = Object.fromEntries((store.associates || []).map((a) => [a.id, a]));
+  const catRates = compute.rates(s.assumptions);
+  const rateOfCat = (cat) => cat === 'Senior' ? catRates.sr : cat === 'Junior' ? catRates.jr : catRates.mid;
+  const resByClient = {};
+  const resByPerson = {};
+  const bumpPerson = (id, key, hrs) => {
+    const a = assocByIdD[id];
+    const p = resByPerson[id] || (resByPerson[id] = {
+      id, name: a ? a.name : ('#' + id), category: a ? categoryOf(a) : '', planHours: 0, actualHours: 0,
+    });
+    p[key] += hrs;
+  };
+  for (const e of store.entries) {
+    if (!visIds.has(e.accountId)) continue;
+    const acc = accById[e.accountId];
+    const cname = (acc && acc.name) || '—';
+    const bag = resByClient[cname] || (resByClient[cname] = {
+      name: cname, planHours: 0, actualHours: 0, planCost: 0, actualCost: 0,
+    });
+    for (const x of (e.resourcesPlan || [])) {
+      const a = assocByIdD[x.id]; const h = compute.num(x.hours);
+      bag.planHours += h; bag.planCost += h * rateOfCat(a ? categoryOf(a) : 'Middle');
+      bumpPerson(Number(x.id), 'planHours', h);
+    }
+    for (const x of (e.resourcesActual || [])) {
+      const a = assocByIdD[x.id]; const h = compute.num(x.hours);
+      bag.actualHours += h; bag.actualCost += h * rateOfCat(a ? categoryOf(a) : 'Middle');
+      bumpPerson(Number(x.id), 'actualHours', h);
+    }
+  }
+  const resourceByClient = Object.values(resByClient)
+    .filter((r) => r.planHours || r.actualHours)
+    .map((r) => ({ ...r, hoursVariance: r.actualHours - r.planHours, costVariance: r.actualCost - r.planCost }))
+    .sort((a, b) => b.actualHours - a.actualHours);
+  const resourceByPerson = Object.values(resByPerson)
+    .filter((r) => r.planHours || r.actualHours)
+    .map((r) => ({ ...r, hoursVariance: r.actualHours - r.planHours }))
+    .sort((a, b) => b.actualHours - a.actualHours);
+
+  res.json({
+    mode, months: s.months, ytd, monthly, wingSummary, ranking,
+    comparison, comparisonByClient, comparisonYtd, resourceByClient, resourceByPerson,
+  });
 });
 
 // ---------- drill-down detail (a full breakdown for one month or one client) ----------
@@ -1002,8 +1047,9 @@ function bootstrapEmptyStore(store) {
     });
   } else {
     // Placeholder baseline — NOT the real figures. Edit in Settings → Assumptions.
-    const months = ['Mar-26', 'Apr-26', 'May-26', 'Jun-26', 'Jul-26', 'Aug-26',
-      'Sep-26', 'Oct-26', 'Nov-26', 'Dec-26', 'Jan-27', 'Feb-27', 'Mar-27'];
+    // Financial year runs April → March (user, 2026-08-26).
+    const months = ['Apr-26', 'May-26', 'Jun-26', 'Jul-26', 'Aug-26', 'Sep-26',
+      'Oct-26', 'Nov-26', 'Dec-26', 'Jan-27', 'Feb-27', 'Mar-27'];
     const toolPool = {};
     for (const m of months) toolPool[m] = 0;
     store.settings = {
