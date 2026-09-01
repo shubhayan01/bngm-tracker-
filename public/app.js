@@ -854,24 +854,19 @@ function wireReportFilter() {
   applyReport(state.reportTab || 'overview');
 }
 
-// ---- drill-down details (user, 2026-08-24) ----
-// A small "🔍" button that appears on hover over a month or client cell in Reports;
-// clicking opens a full breakdown for that month / client in a new browser tab.
-function detailBtn(type, key) {
-  return `<button class="cell-detail" type="button" data-dtype="${esc(type)}" data-dkey="${esc(key)}" title="Open full details in a new tab">🔍</button>`;
-}
-function hoverCell(text, type, key, extraClass) {
-  return `<span class="cell-hover ${extraClass || ''}">${text}${detailBtn(type, key)}</span>`;
-}
-function wireDetailButtons(root) {
-  $$('.cell-detail', root || document).forEach((b) => (b.onclick = (e) => {
-    e.stopPropagation();
-    openDetailTab(b.dataset.dtype, b.dataset.dkey);
-  }));
-}
+// ---- drill-down details (user, 2026-09-01) ----
+// The whole report row is clickable: clicking anywhere on it opens a full breakdown
+// for that month / client in a new browser tab (replaced the old per-cell 🔍 button).
 function openDetailTab(type, key) {
   const url = `?view=detail&type=${encodeURIComponent(type)}&key=${encodeURIComponent(key)}`;
   window.open(url, '_blank', 'noopener');
+}
+// Attributes that turn a <tr> into a clickable link to the drill-down detail tab.
+function rowLink(type, key, extraClass) {
+  return `class="row-link${extraClass ? ' ' + extraClass : ''}" data-dtype="${esc(type)}" data-dkey="${esc(String(key))}" title="Click for full details"`;
+}
+function wireRowLinks(root) {
+  $$('tr.row-link', root || document).forEach((tr) => (tr.onclick = () => openDetailTab(tr.dataset.dtype, tr.dataset.dkey)));
 }
 
 // Costs are expenses, so reports show them as negative red figures (user, 2026-08-17).
@@ -971,7 +966,7 @@ function renderPlanActual() {
   if (!active.length) html += `<tr><td colspan="10" class="l muted">No entries yet.</td></tr>`;
   active.forEach((r) => {
     const on = sel.includes(r.month);
-    html += `<tr class="${on ? 'row-sel' : ''}"><td class="l">${hoverCell(r.month, 'month', r.month)}</td>` +
+    html += `<tr ${rowLink('month', r.month, on ? 'row-sel' : '')}><td class="l">${r.month}</td>` +
       `<td>${inr(r.planRevenue)}</td><td>${inr(r.actualRevenue)}</td>${varCell(r.revVariance)}` +
       `<td>${inr(r.planGP)}</td><td>${inr(r.actualGP)}</td>${varCell(r.gpVariance)}` +
       `<td>${pct(r.planGM)}</td><td>${pct(r.actualGM)}</td>${varCell(r.gmVariance, true)}</tr>`;
@@ -984,7 +979,7 @@ function renderPlanActual() {
       `<td>${pct(tot.planGM)}</td><td>${pct(tot.actualGM)}</td>${varCell(tot.gmVariance, true)}</tr>`;
   }
   $('#cmpTable').innerHTML = html + '</tbody>';
-  wireDetailButtons($('#cmpTable'));
+  wireRowLinks($('#cmpTable'));
 }
 
 // ---- Plan vs Actual per customer (user, 2026-08-24) ----
@@ -1003,15 +998,26 @@ function renderClientCompare() {
   const head = ['Client', 'Plan Rev', 'Actual Rev', 'Δ Rev', 'Plan Cost', 'Actual Cost', 'Plan GP', 'Actual GP', 'Δ GP', 'Plan GM', 'Actual GM', 'Δ GM'];
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
   if (!rows.length) html += `<tr><td colspan="12" class="l muted">${(state.clientCmp || []).length ? 'No clients match the filter.' : 'No entries yet.'}</td></tr>`;
+  const t = { planRevenue: 0, actualRevenue: 0, planCost: 0, actualCost: 0, planGP: 0, actualGP: 0 };
   rows.forEach((r) => {
-    html += `<tr><td class="l">${hoverCell(esc(r.name), 'client', r.name)}</td>` +
+    Object.keys(t).forEach((k) => (t[k] += Number(r[k]) || 0));
+    html += `<tr ${rowLink('client', r.name)}><td class="l">${esc(r.name)}</td>` +
       `<td>${inr(r.planRevenue)}</td><td>${inr(r.actualRevenue)}</td>${varCell(r.revVariance)}` +
       `${costCell(r.planCost)}${costCell(r.actualCost)}` +
       `<td>${inr(r.planGP)}</td><td>${inr(r.actualGP)}</td>${varCell(r.gpVariance)}` +
       `<td>${pct(r.planGM)}</td><td>${pct(r.actualGM)}</td>${varCell(r.gmVariance, true)}</tr>`;
   });
+  if (rows.length) {
+    const pGM = t.planRevenue ? t.planGP / t.planRevenue : 0;
+    const aGM = t.actualRevenue ? t.actualGP / t.actualRevenue : 0;
+    html += `<tr class="row-total"><td class="l"><b>Total</b></td>` +
+      `<td>${inr(t.planRevenue)}</td><td>${inr(t.actualRevenue)}</td>${varCell(t.actualRevenue - t.planRevenue)}` +
+      `${costCell(t.planCost)}${costCell(t.actualCost)}` +
+      `<td>${inr(t.planGP)}</td><td>${inr(t.actualGP)}</td>${varCell(t.actualGP - t.planGP)}` +
+      `<td>${pct(pGM)}</td><td>${pct(aGM)}</td>${varCell(aGM - pGM, true)}</tr>`;
+  }
   $('#clientCmpTable').innerHTML = html + '</tbody>';
-  wireDetailButtons($('#clientCmpTable'));
+  wireRowLinks($('#clientCmpTable'));
 }
 
 // ---- Resources: planned vs actual hours (user, 2026-08-26) ----
@@ -1045,42 +1051,60 @@ function renderResources() {
 
   if (scope === 'client') {
     const rows = (state.resByClient || []).filter((r) => !q || String(r.name || '').toLowerCase().includes(q));
-    const head = ['Client', 'Plan hrs', 'Actual hrs', 'Δ hrs', 'Plan cost', 'Actual cost', 'Δ cost', ''];
+    const head = ['Client', 'Plan hrs', 'Actual hrs', 'Δ hrs', 'Plan cost', 'Actual cost', 'Δ cost'];
     let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l sticky-col' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
-    if (!rows.length) html += `<tr><td colspan="8" class="l muted">${(state.resByClient || []).length ? 'No clients match the filter.' : 'No resource hours logged yet.'}</td></tr>`;
+    if (!rows.length) html += `<tr><td colspan="7" class="l muted">${(state.resByClient || []).length ? 'No clients match the filter.' : 'No resource hours logged yet.'}</td></tr>`;
     let ph = 0, ah = 0, pc = 0, ac = 0;
     rows.forEach((r) => {
       ph += r.planHours; ah += r.actualHours; pc += r.planCost; ac += r.actualCost;
-      html += `<tr><td class="l sticky-col">${hoverCell(esc(r.name), 'client', r.name)}</td>` +
+      html += `<tr ${rowLink('client', r.name)}><td class="l sticky-col">${esc(r.name)}</td>` +
         `<td>${hrsFmt(r.planHours)}</td><td>${hrsFmt(r.actualHours)}</td>${varHrsCell(r.hoursVariance)}` +
-        `<td>${inr(r.planCost)}</td><td>${inr(r.actualCost)}</td>${varCostCell(r.costVariance)}` +
-        `<td></td></tr>`;
+        `<td>${inr(r.planCost)}</td><td>${inr(r.actualCost)}</td>${varCostCell(r.costVariance)}</tr>`;
     });
     if (rows.length) {
       html += `<tr class="row-total"><td class="l sticky-col"><b>Total</b></td>` +
         `<td>${hrsFmt(ph)}</td><td>${hrsFmt(ah)}</td>${varHrsCell(ah - ph)}` +
-        `<td>${inr(pc)}</td><td>${inr(ac)}</td>${varCostCell(ac - pc)}<td></td></tr>`;
+        `<td>${inr(pc)}</td><td>${inr(ac)}</td>${varCostCell(ac - pc)}</tr>`;
     }
     table.innerHTML = html + '</tbody>';
-    wireDetailButtons(table);
+    wireRowLinks(table);
   } else {
     const rows = (state.resByPerson || []).filter((r) => !q || String(r.name || '').toLowerCase().includes(q));
     const showCat = isSuper();
-    const head = ['Resource'].concat(showCat ? ['Category'] : []).concat(['Plan hrs', 'Actual hrs', 'Δ hrs', 'Asana']);
+    // % utilisation = actual booked hours ÷ each person's total capacity for the year
+    // (hours/month × number of months), from the server (user, 2026-09-01).
+    const head = ['Resource'].concat(showCat ? ['Category'] : []).concat(['Plan hrs', 'Actual hrs', 'Δ hrs', 'Utilisation', 'Asana']);
     const cols = head.length;
     let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l sticky-col' : (i === 1 && showCat ? 'l' : '')}">${h}</th>`).join('') + '</tr></thead><tbody>';
     if (!rows.length) html += `<tr><td colspan="${cols}" class="l muted">${(state.resByPerson || []).length ? 'No resources match the filter.' : 'No resource hours logged yet.'}</td></tr>`;
+    let ph = 0, ah = 0, cap = 0;
     rows.forEach((r) => {
+      ph += r.planHours; ah += r.actualHours; cap += (Number(r.capacity) || 0);
       const catCell = showCat
         ? `<td class="l">${r.category ? `<span class="cat-tag cat-${String(r.category).toLowerCase()}">${esc(r.category)}</span>` : ''}</td>`
         : '';
       html += `<tr><td class="l sticky-col">${esc(r.name)}</td>${catCell}` +
         `<td>${hrsFmt(r.planHours)}</td><td>${hrsFmt(r.actualHours)}</td>${varHrsCell(r.hoursVariance)}` +
+        `<td>${utilCell(r.utilisation)}</td>` +
         `<td><button type="button" class="btn btn-sm btn-ghost res-asana-rep" data-email="${esc(r.name)}" title="Open Asana assignments for ${esc(r.name)}">📋 Asana</button></td></tr>`;
     });
+    if (rows.length) {
+      const catTot = showCat ? '<td class="l"></td>' : '';
+      html += `<tr class="row-total"><td class="l sticky-col"><b>Total</b></td>${catTot}` +
+        `<td>${hrsFmt(ph)}</td><td>${hrsFmt(ah)}</td>${varHrsCell(ah - ph)}` +
+        `<td>${utilCell(cap ? ah / cap : 0)}</td><td></td></tr>`;
+    }
     table.innerHTML = html + '</tbody>';
     $$('.res-asana-rep', table).forEach((b) => (b.onclick = () => window.open(asanaUrl(b.dataset.email), '_blank', 'noopener')));
   }
+}
+
+// Utilisation cell: green when comfortably loaded, amber when light, red when > 100%
+// (over-booked vs the monthly hour cap).
+function utilCell(u) {
+  const p = (Number(u) || 0) * 100;
+  const col = p > 100 ? 'var(--red)' : p >= 60 ? 'var(--green)' : 'var(--muted)';
+  return `<span style="color:${col};font-weight:600">${p.toFixed(0)}%</span>`;
 }
 
 // ---- Tools: budget vs actual monthly spend, per department (user, 2026-08-26) ----
@@ -1140,19 +1164,31 @@ function statusPill(s) {
 function renderMonthly(rows) {
   const head = ['Month', 'Revenue', 'Manpower', 'Outsource', 'Tool', 'Total Cost', 'Gross Profit', 'GM %', 'Active', '✅', '⚠️', '🔴'];
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
+  const t = { revenue: 0, manpower: 0, outsourcing: 0, toolShare: 0, totalCost: 0, grossProfit: 0 };
   rows.forEach((r) => {
-    html += `<tr><td class="l">${hoverCell(r.month, 'month', r.month)}</td><td>${inrUsd(r.revenue)}</td>${costCell(r.manpower)}${costCell(r.outsourcing)}${costCell(r.toolShare)}${costCell(r.totalCost)}<td>${inrUsd(r.grossProfit)}</td><td>${pct(r.gm)}</td><td>${r.activeAccounts}</td><td>${r.healthy}</td><td>${r.review}</td><td>${r.atrisk}</td></tr>`;
+    Object.keys(t).forEach((k) => (t[k] += Number(r[k]) || 0));
+    html += `<tr ${rowLink('month', r.month)}><td class="l">${r.month}</td><td>${inrUsd(r.revenue)}</td>${costCell(r.manpower)}${costCell(r.outsourcing)}${costCell(r.toolShare)}${costCell(r.totalCost)}<td>${inrUsd(r.grossProfit)}</td><td>${pct(r.gm)}</td><td>${r.activeAccounts}</td><td>${r.healthy}</td><td>${r.review}</td><td>${r.atrisk}</td></tr>`;
   });
+  if (rows.length) {
+    const tgm = t.revenue ? t.grossProfit / t.revenue : 0;
+    html += `<tr class="row-total"><td class="l"><b>Total</b></td><td>${inrUsd(t.revenue)}</td>${costCell(t.manpower)}${costCell(t.outsourcing)}${costCell(t.toolShare)}${costCell(t.totalCost)}<td>${inrUsd(t.grossProfit)}</td><td>${pct(tgm)}</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>`;
+  }
   $('#monthlyTable').innerHTML = html + '</tbody>';
-  wireDetailButtons($('#monthlyTable'));
+  wireRowLinks($('#monthlyTable'));
 }
 
 function renderWings(rows) {
-  const head = ['Wing / Dept', 'Revenue', 'Total Cost', 'Gross Profit', 'GM %', 'Status'];
+  const head = ['Service / Dept', 'Revenue', 'Total Cost', 'Gross Profit', 'GM %', 'Status'];
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
+  const t = { revenue: 0, totalCost: 0, grossProfit: 0 };
   rows.forEach((r) => {
+    Object.keys(t).forEach((k) => (t[k] += Number(r[k]) || 0));
     html += `<tr><td class="l">${r.wing}</td><td>${inrUsd(r.revenue)}</td>${costCell(r.totalCost)}<td>${inrUsd(r.grossProfit)}</td><td>${pct(r.gm)}</td><td>${statusPill(r.status)}</td></tr>`;
   });
+  if (rows.length) {
+    const tgm = t.revenue ? t.grossProfit / t.revenue : 0;
+    html += `<tr class="row-total"><td class="l"><b>Total</b></td><td>${inrUsd(t.revenue)}</td>${costCell(t.totalCost)}<td>${inrUsd(t.grossProfit)}</td><td>${pct(tgm)}</td><td></td></tr>`;
+  }
   $('#wingTable').innerHTML = html + '</tbody>';
 }
 // Ranking (the last "top revenue" report) with a department + name filter.
@@ -1178,15 +1214,21 @@ function renderRanking() {
   const rows = (state.rankRows || []).filter((r) =>
     (!wing || r.wing === wing) && (!q || String(r.name || '').toLowerCase().includes(q)));
 
-  const head = ['#', 'Account', 'Wing', 'Revenue', 'Total Cost', 'Gross Profit', 'GM %', 'Target', 'Variance', 'Status'];
+  const head = ['#', 'Account', 'Service', 'Revenue', 'Total Cost', 'Gross Profit', 'GM %', 'Target', 'Variance', 'Status'];
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 1 || i === 2 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
   if (!rows.length) html += `<tr><td colspan="10" class="l muted">${(state.rankRows || []).length ? 'No accounts match the filter.' : 'No entries yet — use the Update tab.'}</td></tr>`;
+  const t = { revenue: 0, totalCost: 0, grossProfit: 0 };
   rows.forEach((r, i) => {
+    Object.keys(t).forEach((k) => (t[k] += Number(r[k]) || 0));
     const vClass = r.variance >= 0 ? 'style="color:var(--green)"' : 'style="color:var(--red)"';
-    html += `<tr><td class="l">${i + 1}</td><td class="l">${hoverCell(esc(r.name), 'client', r.name)}</td><td class="l">${esc(r.wing) || '—'}</td><td>${inrUsd(r.revenue)}</td>${costCell(r.totalCost)}<td>${inrUsd(r.grossProfit)}</td><td>${pct(r.gm)}</td><td>${pct(r.budgetGM)}</td><td ${vClass}>${(r.variance * 100).toFixed(1)}%</td><td>${statusPill(r.status)}</td></tr>`;
+    html += `<tr ${rowLink('client', r.name)}><td class="l">${i + 1}</td><td class="l">${esc(r.name)}</td><td class="l">${esc(r.wing) || '—'}</td><td>${inrUsd(r.revenue)}</td>${costCell(r.totalCost)}<td>${inrUsd(r.grossProfit)}</td><td>${pct(r.gm)}</td><td>${pct(r.budgetGM)}</td><td ${vClass}>${(r.variance * 100).toFixed(1)}%</td><td>${statusPill(r.status)}</td></tr>`;
   });
+  if (rows.length) {
+    const tgm = t.revenue ? t.grossProfit / t.revenue : 0;
+    html += `<tr class="row-total"><td class="l"></td><td class="l"><b>Total</b></td><td class="l"></td><td>${inrUsd(t.revenue)}</td>${costCell(t.totalCost)}<td>${inrUsd(t.grossProfit)}</td><td>${pct(tgm)}</td><td>—</td><td>—</td><td></td></tr>`;
+  }
   $('#rankTable').innerHTML = html + '</tbody>';
-  wireDetailButtons($('#rankTable'));
+  wireRowLinks($('#rankTable'));
 }
 
 // ================= DRILL-DOWN DETAIL VIEW (opens in its own tab) =================

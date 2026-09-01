@@ -771,9 +771,18 @@ app.get('/api/dashboard', auth, (req, res) => {
     .filter((r) => r.planHours || r.actualHours)
     .map((r) => ({ ...r, hoursVariance: r.actualHours - r.planHours, costVariance: r.actualCost - r.planCost }))
     .sort((a, b) => b.actualHours - a.actualHours);
+  // % utilisation of each resource's time = actual booked hours ÷ their capacity for
+  // the whole period (monthly hour cap × number of months) (user, 2026-09-01).
+  const capPerMonth = compute.num(s.assumptions.resourceMonthlyHours) || 180;
+  const capTotal = capPerMonth * (Array.isArray(s.months) ? s.months.length : 0);
   const resourceByPerson = Object.values(resByPerson)
     .filter((r) => r.planHours || r.actualHours)
-    .map((r) => ({ ...r, hoursVariance: r.actualHours - r.planHours }))
+    .map((r) => ({
+      ...r,
+      hoursVariance: r.actualHours - r.planHours,
+      capacity: capTotal,
+      utilisation: capTotal ? r.actualHours / capTotal : 0,
+    }))
     .sort((a, b) => b.actualHours - a.actualHours);
 
   res.json({

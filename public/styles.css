@@ -606,18 +606,13 @@ table.data tbody td { border-bottom: 1px solid color-mix(in srgb, var(--line) 70
 .help-input { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--line); background: var(--on-glass-input); }
 .help-input input { flex: 1; }
 
-/* ---------- drill-down details (user, 2026-08-24) ---------- */
-/* hover-revealed 🔍 button on a month / client cell */
+/* ---------- drill-down details (user, 2026-09-01) ---------- */
+/* Whole report rows are clickable and open the full breakdown in a new tab
+   (replaced the old hover-revealed 🔍 button). */
 .cell-hover { display: inline-flex; align-items: center; gap: 6px; }
-.cell-detail {
-  opacity: 0; visibility: hidden; cursor: pointer;
-  border: 1px solid var(--line-strong); background: var(--glass-2); color: var(--muted);
-  border-radius: 7px; padding: 0 5px; height: 20px; line-height: 1; font-size: 12px;
-  transition: opacity .12s ease, color .12s ease, border-color .12s ease;
-}
-table.data tbody tr:hover .cell-detail { opacity: 1; visibility: visible; }
-.cell-detail:hover { color: var(--brand); border-color: var(--brand); }
-.cell-detail:focus-visible { opacity: 1; visibility: visible; outline: 2px solid var(--brand); }
+table.data tbody tr.row-link { cursor: pointer; }
+table.data tbody tr.row-link:hover { background: color-mix(in srgb, var(--brand) 14%, transparent); }
+table.data tbody tr.row-link:hover td.sticky-col { background: color-mix(in srgb, var(--brand) 14%, var(--glass-solid)); }
 .pr-notes { white-space: normal; }
 
 /* detail view: plan/actual figure cards */
