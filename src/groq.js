@@ -63,7 +63,7 @@ function buildSystemPrompt(snapshot) {
     try {
       ctx = '\n\nCurrent snapshot (for reference, may be partial):\n' +
         JSON.stringify(snapshot).slice(0, 3000);
-    } catch { /* ignore */ }
+    } catch { /* ignore */ }  
   }
   return APP_GUIDE + ctx;
 }

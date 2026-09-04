@@ -25,6 +25,8 @@
       </div>
       <label class="field">
         <span>Access level</span>
+
+
         <select id="loginRole">
           <option value="super">Super Admin — full access</option>
           <option value="admin">Admin — all dept reports (except Content)</option>
@@ -36,14 +38,14 @@
           <option value="perfmkt">Performance Marketing</option>
         </select>
       </label>
-      <label class="field">
+      <label class="field"> 
         <span>Password</span>
         <input id="loginPassword" type="password" placeholder="Enter password" autocomplete="current-password" />
       </label>
       <button id="loginBtn" class="btn btn-primary btn-block">Sign in</button>
       <p id="loginError" class="error"></p>
     </div>
-  </div>
+  </div> 
 
   <!-- APP -->
   <div id="app" class="app hidden">
@@ -137,7 +139,7 @@
           <button class="rf-pill" data-report="customer">🏢 By Customer</button>
           <button class="rf-pill" data-report="resources">👥 Resources</button>
           <button class="rf-pill" data-report="tools">🧰 Tools</button>
-          <button class="rf-pill" data-report="ranking">🏆 Services &amp; Ranking</button>
+          <button class="rf-pill" data-report="ranking">🏆 Wings &amp; Ranking</button>
         </nav>
 
         <!-- Overview -->
@@ -200,9 +202,9 @@
           <div class="table-scroll glass"><table id="toolReportTable" class="data"></table></div>
         </div>
 
-        <!-- Services & Ranking -->
+        <!-- Wings & Ranking -->
         <div class="report-block" data-report="ranking" hidden>
-          <h3>Service / department summary (YTD)</h3>
+          <h3>Wing / department summary (YTD)</h3>
           <div class="table-scroll glass"><table id="wingTable" class="data"></table></div>
 
           <div class="view-head" style="margin-top:22px">
