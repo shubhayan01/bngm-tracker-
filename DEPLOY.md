@@ -1,3 +1,53 @@
+# Deploying the JW BNGM Tracker
+
+- **Railway (managed MySQL, easiest)** — see the [Railway section](#deploying-to-railway-mysql) below.
+- **Hostinger VPS (self-managed)** — the rest of this document.
+
+---
+
+## Deploying to Railway (MySQL)
+
+Railway runs the Node app and a managed MySQL database side by side. The app
+creates its own tables and seeds itself on first boot, so there is nothing to
+import.
+
+### 1. Add the two services
+1. Create a project → **Deploy from GitHub repo** and pick the tracker repo
+   (Railway runs `npm install` then `npm start` automatically — no config needed).
+2. In the same project → **New → Database → Add MySQL**.
+
+### 2. Point the app at the database
+Open the **app service → Variables** and add these. The `${{ MySQL.* }}` syntax
+is a Railway *reference variable* — it pulls the live value from the MySQL
+service (use the private `MYSQLHOST`, which is free and stays inside Railway):
+
+```
+DB_HOST=${{ MySQL.MYSQLHOST }}
+DB_PORT=${{ MySQL.MYSQLPORT }}
+DB_USER=${{ MySQL.MYSQLUSER }}
+DB_PASSWORD=${{ MySQL.MYSQLPASSWORD }}
+DB_NAME=${{ MySQL.MYSQLDATABASE }}
+JWT_SECRET=<paste output of: openssl rand -hex 32>
+```
+
+> Alternatively, set a single `MYSQL_URL=${{ MySQL.MYSQL_URL }}` — the app parses
+> host/port/user/password/database out of it.
+
+Do **not** set `DB_DISABLED` (or set it to `false`). If it is `true` the app
+ignores MySQL and writes to an ephemeral local file that Railway wipes on every
+redeploy. Do **not** set `PORT` — Railway injects it and the app already reads it.
+
+### 3. Deploy and verify
+Railway redeploys on save. In the app's **Deploy Logs** you should see the
+schema/seed lines and finally `JW BNGM Tracker running`. Open the public URL
+(Settings → Networking → Generate Domain), sign in as **Super**, and immediately
+change every password in **Assumptions → role passwords**.
+
+Backups: Railway's MySQL service has snapshot/backup options in its own panel;
+you can also `mysqldump` against the public connection string.
+
+---
+
 # Deploying the JW BNGM Tracker to Hostinger (MySQL)
 
 This app is a **Node.js server** that stores its data in a **MySQL/MariaDB database**.

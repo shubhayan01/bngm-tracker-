@@ -75,13 +75,39 @@ let cache = null;
 let pool = null;
 let writeChain = Promise.resolve();
 
+// Parse a MySQL connection URL (mysql://user:pass@host:port/dbname) into parts.
+// Railway/other PaaS often expose the database only as a single URL variable.
+function parseDbUrl(url) {
+  try {
+    const u = new URL(url);
+    return {
+      host: decodeURIComponent(u.hostname),
+      port: u.port ? Number(u.port) : null,
+      user: u.username ? decodeURIComponent(u.username) : null,
+      password: u.password ? decodeURIComponent(u.password) : null,
+      database: u.pathname ? decodeURIComponent(u.pathname.replace(/^\//, '')) : null,
+    };
+  } catch {
+    return {};
+  }
+}
+
+// Resolve the MySQL connection from (in priority order):
+//   1. explicit DB_* variables (Hostinger / .env / this app's own names)
+//   2. Railway's MYSQL* service variables
+//   3. a single connection URL (DATABASE_URL / MYSQL_URL / DB_URL)
+// so the same code runs on a hand-configured VPS and on Railway unchanged.
 function dbConfig() {
+  const url =
+    process.env.DATABASE_URL || process.env.MYSQL_URL || process.env.DB_URL;
+  const u = url ? parseDbUrl(url) : {};
   return {
-    host: process.env.DB_HOST || 'localhost',
-    port: Number(process.env.DB_PORT || 3306),
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'bngm',
+    host: process.env.DB_HOST || process.env.MYSQLHOST || u.host || 'localhost',
+    port: Number(process.env.DB_PORT || process.env.MYSQLPORT || u.port || 3306),
+    user: process.env.DB_USER || process.env.MYSQLUSER || u.user || 'root',
+    password:
+      process.env.DB_PASSWORD || process.env.MYSQLPASSWORD || u.password || '',
+    database: process.env.DB_NAME || process.env.MYSQLDATABASE || u.database || 'bngm',
   };
 }
 
