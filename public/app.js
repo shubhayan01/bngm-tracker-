@@ -1854,6 +1854,25 @@ async function renderSettings() {
     await api('/settings/password', { method: 'PUT', body: JSON.stringify({ role, newPassword: v }) });
     $('#pw_' + role).value = ''; toast(state.boot.roles[role] + ' password updated');
   }));
+
+  // Backup — fetch the full store as a file and save it. Can't use api() (that
+  // parses JSON); we need the raw body as a downloadable blob with the auth header.
+  const dl = $('#downloadBackup');
+  if (dl) dl.onclick = async () => {
+    try {
+      const res = await fetch('/api/backup', { headers: { Authorization: 'Bearer ' + state.token } });
+      if (res.status === 401) { logout(); return; }
+      if (!res.ok) { toast('Backup failed'); return; }
+      const blob = await res.blob();
+      const cd = res.headers.get('Content-Disposition') || '';
+      const m = cd.match(/filename="([^"]+)"/);
+      const name = m ? m[1] : `bngm-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      const url = URL.createObjectURL(blob);
+      const a = el('a'); a.href = url; a.download = name; document.body.appendChild(a);
+      a.click(); a.remove(); URL.revokeObjectURL(url);
+      toast('Backup downloaded');
+    } catch (e) { toast(e.message || 'Backup failed'); }
+  };
 }
 
 // ================= HELP BOT (Groq) =================

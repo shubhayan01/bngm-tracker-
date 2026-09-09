@@ -971,6 +971,19 @@ app.put('/api/settings/password', auth, requirePerm('canManageUsers'), (req, res
   db.save().then(() => res.json({ ok: true, role }));
 });
 
+// Super-only backup: download the entire datastore as one JSON file. This is the
+// full store (users/settings/accounts/associates/entries/meta) exactly as held in
+// memory — a complete snapshot you can archive or restore from. On the file-store
+// deployment (Railway volume) this is the easy off-box backup a database panel
+// would otherwise give you.
+app.get('/api/backup', auth, requirePerm('canManageClients'), (req, res) => {
+  const store = db.get();
+  const stamp = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="bngm-backup-${stamp}.json"`);
+  res.send(JSON.stringify(store, null, 2));
+});
+
 // SPA fallback
 app.get(/^\/(?!api).*/, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
