@@ -412,7 +412,9 @@ app.post('/api/associates', auth, requirePerm('canEditSettings'), (req, res) => 
   if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: 'Name required' });
   const store = db.get();
   const category = roster.normCategory(b.category != null ? b.category : b.type);
-  const a = { id: db.nextId('associates'), name: String(b.name).trim(), category, type: roster.typeFromCategory(category) };
+  const email = String(b.name).trim();
+  const fullName = (b.fullName && String(b.fullName).trim()) || roster.emailToName(email) || email;
+  const a = { id: db.nextId('associates'), name: email, fullName, category, type: roster.typeFromCategory(category) };
   store.associates.push(a);
   db.save().then(() => res.json(a));
 });
@@ -424,6 +426,8 @@ app.put('/api/associates/:id', auth, requirePerm('canEditSettings'), (req, res) 
   if (!a) return res.status(404).json({ error: 'Resource not found' });
   const b = req.body || {};
   if (b.name != null) a.name = String(b.name).trim();
+  if (b.fullName != null) a.fullName = String(b.fullName).trim();
+  if (!a.fullName) a.fullName = roster.emailToName(a.name) || a.name;
   if (b.category != null || b.type != null) {
     a.category = roster.normCategory(b.category != null ? b.category : b.type);
     a.type = roster.typeFromCategory(a.category);
@@ -536,7 +540,7 @@ app.put('/api/entry', auth, requireWrite, (req, res) => {
     const other = resourceMonthUsage(month, m, accountId);
     for (const r of arr) {
       if ((other[r.id] || 0) + r.hours > cap) {
-        const nm = (assocById[r.id] && assocById[r.id].name) || ('#' + r.id);
+        const nm = (assocById[r.id] && (assocById[r.id].fullName || assocById[r.id].name)) || ('#' + r.id);
         const free = Math.max(0, cap - (other[r.id] || 0));
         return `${nm} is already booked ${other[r.id] || 0} hr in ${month} on other clients — only ${free} of ${cap} hrs free, but you entered ${r.hours}.`;
       }
@@ -745,7 +749,7 @@ app.get('/api/dashboard', auth, (req, res) => {
   const bumpPerson = (id, key, hrs) => {
     const a = assocByIdD[id];
     const p = resByPerson[id] || (resByPerson[id] = {
-      id, name: a ? a.name : ('#' + id), category: a ? categoryOf(a) : '', planHours: 0, actualHours: 0,
+      id, name: a ? (a.fullName || a.name) : ('#' + id), email: a ? a.name : '', category: a ? categoryOf(a) : '', planHours: 0, actualHours: 0,
     });
     p[key] += hrs;
   };
@@ -806,7 +810,7 @@ app.get('/api/detail', auth, (req, res) => {
 
   const resolveResources = (arr) => (Array.isArray(arr) ? arr : []).map((r) => {
     const a = assocById[r.id];
-    return { id: r.id, name: a ? a.name : ('#' + r.id), category: a ? categoryOf(a) : '', hours: compute.num(r.hours) };
+    return { id: r.id, name: a ? (a.fullName || a.name) : ('#' + r.id), email: a ? a.name : '', category: a ? categoryOf(a) : '', hours: compute.num(r.hours) };
   });
   const detailFor = (e) => {
     const acc = accById[e.accountId];
@@ -1197,6 +1201,16 @@ function migrate() {
     if (catChanged) { dirty = true; console.log(`  + set category on ${catChanged} new resource(s)`); }
   }
 
+  // 9b) every resource carries a human-readable name (user, 2026-09-09). Datastores
+  // seeded before this stored only the email, so the resource picker could not be
+  // searched or shown by name. Backfill `fullName` from the roster file (by email),
+  // falling back to a name derived from the email. Additive — never clears a name.
+  const namesSet = roster.applyNamesToStore(store);
+  if (namesSet) {
+    dirty = true;
+    console.log(`  ✓ set display name on ${namesSet} resource(s)`);
+  }
+
   // 10) merge the client list from "clients.txt" (Book1) into accounts, additively.
   const clientsAdded = clients.syncClientsIntoStore(store);
   if (clientsAdded) {
@@ -1212,6 +1226,7 @@ function migrate() {
 db.init()
   .then(() => {
     migrate();
+    fx.warm(); // begin fetching the USD→INR rate in the background so the first load is fast
     app.listen(PORT, () => {
       console.log(`\nJW BNGM Tracker running →  http://localhost:${PORT}\n`);
     });

@@ -431,6 +431,9 @@ function setRes(id, hours) {
   else if (r) arr.splice(arr.indexOf(r), 1);
 }
 function assocById(id) { return (state.boot.associates || []).find((a) => a.id === Number(id)); }
+// A resource's display name (its real name if we have one, otherwise the email).
+function assocLabel(a) { return (a && (a.fullName || a.name)) || ''; }
+function assocEmail(a) { return (a && a.name) || ''; }
 
 // Planned hours booked for a resource (reference shown while filling Actuals).
 function plannedHoursFor(id) {
@@ -462,8 +465,8 @@ function plannedRefBlock() {
   const resLines = planRes.length
     ? planRes.map((r) => {
       const a = assocById(r.id);
-      const nm = a ? a.name : ('#' + r.id);
-      return `<div class="pr-line"><span>${esc(nm)}${a ? ' ' + catTag(a) : ''}</span><span class="val">${r.hours} hr planned</span></div>`;
+      const nm = a ? assocLabel(a) : ('#' + r.id);
+      return `<div class="pr-line"><span title="${esc(a ? assocEmail(a) : '')}">${esc(nm)}${a ? ' ' + catTag(a) : ''}</span><span class="val">${r.hours} hr planned</span></div>`;
     }).join('')
     : '<div class="muted small">No resources were planned.</div>';
   const outBlock = planOut.length ? `
@@ -499,7 +502,8 @@ function renderResRows() {
   const showPlan = entry.mode === 'actual';
   cont.innerHTML = ids.map((id) => {
     const a = assocById(id);
-    const email = a ? a.name : ('#' + id);
+    const label = a ? assocLabel(a) : ('#' + id);
+    const email = a ? assocEmail(a) : '';
     const used = usageOther[id] || 0;
     const cur = resHours(id) || 0;
     const maxForThis = Math.max(0, cap - used);
@@ -508,7 +512,7 @@ function renderResRows() {
     const planTag = showPlan && ph ? `<span class="res-plan" title="Hours expected during planning">expected ${ph} hr</span>` : '';
     return `
     <label class="res-row ${full ? 'res-full' : ''}" data-id="${id}">
-      <span class="res-name">${esc(email)}${a ? ' ' + catTag(a) : ' <span class="muted small">(removed)</span>'}${planTag}</span>
+      <span class="res-name" title="${esc(email)}">${esc(label)}${a ? ' ' + catTag(a) : ' <span class="muted small">(removed)</span>'}${planTag}</span>
       <input type="number" min="0" max="${maxForThis}" step="1" class="res-hrs" data-id="${id}"
              value="${cur || ''}" placeholder="${showPlan && ph ? ph + ' hrs?' : '0 hrs'}" />
       <span class="res-avail muted">${availLabel(used, cur, cap)}</span>
@@ -553,15 +557,17 @@ function wireResSearch() {
     if (!q) { close(); return; }
     const picked = entry.picked || new Set();
     const matches = (state.boot.associates || [])
-      .filter((a) => !picked.has(a.id) && String(a.name || '').toLowerCase().includes(q))
+      .filter((a) => !picked.has(a.id) &&
+        (String(a.fullName || '').toLowerCase().includes(q) ||
+         String(a.name || '').toLowerCase().includes(q)))
       .slice(0, 8);
     if (!matches.length) {
-      box.innerHTML = `<div class="res-match muted">No team email matches “${esc(inp.value)}”. Add them in Manage team.</div>`;
+      box.innerHTML = `<div class="res-match muted">No team member matches “${esc(inp.value)}”. Add them in Manage team.</div>`;
       box.classList.remove('hidden');
       return;
     }
     box.innerHTML = matches.map((a) =>
-      `<div class="res-match" data-id="${a.id}">${esc(a.name)} ${catTag(a)}</div>`).join('');
+      `<div class="res-match" data-id="${a.id}"><span class="rm-left">${esc(assocLabel(a))} ${catTag(a)}</span><span class="rm-email muted small">${esc(assocEmail(a))}</span></div>`).join('');
     box.classList.remove('hidden');
     $$('.res-match[data-id]', box).forEach((m) => (m.onclick = () => {
       const id = Number(m.dataset.id);
@@ -606,7 +612,7 @@ function renderEntryBody() {
       </div>
       ${legacyHoursNote()}
       <div class="res-add">
-        <input id="e_resSearch" type="search" autocomplete="off" placeholder="Type an email to add a resource…" />
+        <input id="e_resSearch" type="search" autocomplete="off" placeholder="Type a name or email to add a resource…" />
         <div id="e_resMatches" class="res-matches hidden"></div>
       </div>
       <div id="e_resRows" class="res-list"></div>
@@ -782,9 +788,10 @@ function renderPreview(computed) {
 function manageTeam() {
   const render = () => {
     const catOpts = (sel) => CATEGORIES.map((c) => `<option value="${c}" ${c === sel ? 'selected' : ''}>${c}</option>`).join('');
-    const list = (state.boot.associates || []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    const list = (state.boot.associates || []).slice().sort((a, b) => assocLabel(a).localeCompare(assocLabel(b)));
     const rows = list.map((p) => `
       <div class="team-row" data-id="${p.id}">
+        <input class="tm-fullname" type="text" value="${esc(p.fullName || '')}" placeholder="Full name" />
         <input class="tm-name" type="email" value="${esc(p.name)}" placeholder="email@domain" />
         <select class="tm-cat">${catOpts(categoryOf(p))}</select>
         <button class="btn btn-sm tm-save">Save</button>
@@ -792,10 +799,11 @@ function manageTeam() {
       </div>`).join('');
     const body = el('div');
     body.innerHTML = `
-      <p class="muted">The team is loaded from <code>emp details.txt</code>, with categories from <code>emp categories.txt</code>. Each resource is identified by their <b>email</b>; its category (<b>Senior · Middle · Junior</b>) drives the ₹/hr rate used in costing.</p>
+      <p class="muted">The team is loaded from <code>emp details.txt</code>, with categories from <code>emp categories.txt</code>. Each resource has a <b>name</b> and an <b>email</b> (used to search &amp; identify them); its category (<b>Senior · Middle · Junior</b>) drives the ₹/hr rate used in costing.</p>
       <div id="teamList">${rows || '<p class="muted">No resources yet.</p>'}</div>
       <div class="team-add">
-        <input id="tm_newName" type="email" placeholder="New person's email" />
+        <input id="tm_newFullName" type="text" placeholder="New person's name" />
+        <input id="tm_newName" type="email" placeholder="email@domain" />
         <select id="tm_newCat">${catOpts('Middle')}</select>
         <button id="tm_add" class="btn btn-sm btn-primary">+ Add</button>
       </div>`;
@@ -803,7 +811,7 @@ function manageTeam() {
     body.querySelectorAll('.team-row').forEach((rowEl) => {
       const id = Number(rowEl.dataset.id);
       rowEl.querySelector('.tm-save').onclick = async () => {
-        await api('/associates/' + id, { method: 'PUT', body: JSON.stringify({ name: rowEl.querySelector('.tm-name').value, category: rowEl.querySelector('.tm-cat').value }) });
+        await api('/associates/' + id, { method: 'PUT', body: JSON.stringify({ name: rowEl.querySelector('.tm-name').value, fullName: rowEl.querySelector('.tm-fullname').value, category: rowEl.querySelector('.tm-cat').value }) });
         state.boot.associates = await api('/associates'); toast('Saved'); render();
       };
       rowEl.querySelector('.tm-del').onclick = async () => {
@@ -814,8 +822,9 @@ function manageTeam() {
     });
     body.querySelector('#tm_add').onclick = async () => {
       const name = body.querySelector('#tm_newName').value.trim();
-      if (!name) { toast('Name required'); return; }
-      await api('/associates', { method: 'POST', body: JSON.stringify({ name, category: body.querySelector('#tm_newCat').value }) });
+      const fullName = body.querySelector('#tm_newFullName').value.trim();
+      if (!name) { toast('Email required'); return; }
+      await api('/associates', { method: 'POST', body: JSON.stringify({ name, fullName, category: body.querySelector('#tm_newCat').value }) });
       state.boot.associates = await api('/associates'); toast('Added'); render();
     };
   };
@@ -1086,7 +1095,7 @@ function renderResources() {
       html += `<tr><td class="l sticky-col">${esc(r.name)}</td>${catCell}` +
         `<td>${hrsFmt(r.planHours)}</td><td>${hrsFmt(r.actualHours)}</td>${varHrsCell(r.hoursVariance)}` +
         `<td>${utilCell(r.utilisation)}</td>` +
-        `<td><button type="button" class="btn btn-sm btn-ghost res-asana-rep" data-email="${esc(r.name)}" title="Open Asana assignments for ${esc(r.name)}">📋 Asana</button></td></tr>`;
+        `<td><button type="button" class="btn btn-sm btn-ghost res-asana-rep" data-email="${esc(r.email || r.name)}" title="Open Asana assignments for ${esc(r.name)}">📋 Asana</button></td></tr>`;
     });
     if (rows.length) {
       const catTot = showCat ? '<td class="l"></td>' : '';

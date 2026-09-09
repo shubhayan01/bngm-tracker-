@@ -383,8 +383,8 @@ body.show-usd .usd-hint.usd { display: block; }
 table.data td .per { font-size: 11px; color: var(--muted); margin-left: 2px; }
 
 /* ---------- team manager ---------- */
-.team-row { display: grid; grid-template-columns: 1fr 100px auto auto; gap: 8px; align-items: center; margin-bottom: 8px; }
-.team-add { display: grid; grid-template-columns: 1fr 100px auto; gap: 8px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.team-row { display: grid; grid-template-columns: 1fr 1fr 100px auto auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+.team-add { display: grid; grid-template-columns: 1fr 1fr 100px auto; gap: 8px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
 
 /* ---------- outsourcing options (job types) ---------- */
 .chip-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
@@ -531,12 +531,14 @@ table.data tbody td { border-bottom: 1px solid color-mix(in srgb, var(--line) 70
 .cat-junior { color: var(--cat-junior); background: color-mix(in srgb, var(--cat-junior) 16%, transparent); border-color: color-mix(in srgb, var(--cat-junior) 36%, transparent); }
 
 /* Manage-team modal now has a 3-way category select */
-.team-row { grid-template-columns: 1fr 108px auto auto; }
-.team-add { grid-template-columns: 1fr 108px auto; }
+.team-row { grid-template-columns: 1fr 1fr 108px auto auto; }
+.team-add { grid-template-columns: 1fr 1fr 108px auto; }
 
 /* Resource rows: let the name + tag sit nicely */
 .res-name { display: inline-flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .res-match { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.res-match .rm-left { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.res-match .rm-email { flex: 0 0 auto; white-space: nowrap; opacity: .75; }
 
 /* Preview & panels — headings get a small accent underline */
 .preview-panel h3, .cum-panel h3 {

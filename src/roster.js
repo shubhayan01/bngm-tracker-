@@ -108,6 +108,20 @@ function looksLikeEmail(s) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || '').trim());
 }
 
+// Best-effort human name from an email address, used only as a fallback when we
+// have no real name for a resource: "prerna.daga@justwords.in" → "Prerna Daga".
+function emailToName(email) {
+  const local = String(email || '').split('@')[0] || '';
+  const words = local
+    .replace(/[._\-]+/g, ' ')
+    .replace(/\d+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1));
+  return words.join(' ');
+}
+
 // Parse the roster file → [{ jwId, fullName, type, email, name }].
 // `name` mirrors `email` so existing callers (seed / sync) keep working — the app
 // identifies a resource by this email string. Returns [] if the file is missing.
@@ -186,7 +200,7 @@ function rebuildAssociatesFromRoster(store) {
     const key = p.email.toLowerCase();
     if (seen.has(key)) continue; // de-dupe by email, keep first
     seen.add(key);
-    list.push({ id: id++, name: p.email, type: p.type, category: p.category });
+    list.push({ id: id++, name: p.email, fullName: p.fullName || emailToName(p.email), type: p.type, category: p.category });
   }
   store.associates = list;
   return list.length;
@@ -218,6 +232,25 @@ function applyCategoriesToStore(store, opts = {}) {
   return changed;
 }
 
+// Backfill a human-readable `fullName` on associates that don't have one yet.
+// Matches each associate to the roster file by email (case-insensitive) to get
+// the real name; falls back to a name derived from the email local-part. This
+// repairs datastores seeded before associates carried a name, so the resource
+// picker can be searched and displayed by name — not just email. Returns count.
+function applyNamesToStore(store) {
+  if (!Array.isArray(store.associates)) return 0;
+  const byEmail = new Map();
+  for (const p of parseRoster()) byEmail.set(p.email.toLowerCase(), p.fullName);
+  let changed = 0;
+  for (const a of store.associates) {
+    if (a.fullName && String(a.fullName).trim()) continue;
+    const email = String(a.name || '').toLowerCase();
+    const nm = byEmail.get(email) || emailToName(email);
+    if (nm) { a.fullName = nm; changed++; }
+  }
+  return changed;
+}
+
 // Non-destructively merge the roster file into the datastore's associates:
 // adds people who aren't there yet (matched by email, case-insensitive).
 // Never deletes and never overrides an existing person's seniority, so live
@@ -232,7 +265,7 @@ function syncRosterIntoStore(store) {
     const key = p.email.toLowerCase();
     if (have.has(key)) continue;
     const id = store.associates.reduce((m, a) => Math.max(m, a.id || 0), 0) + 1;
-    store.associates.push({ id, name: p.email, type: p.type, category: p.category });
+    store.associates.push({ id, name: p.email, fullName: p.fullName || emailToName(p.email), type: p.type, category: p.category });
     have.add(key);
     added++;
   }
@@ -244,6 +277,8 @@ module.exports = {
   syncRosterIntoStore,
   rebuildAssociatesFromRoster,
   emailizeAssociates,
+  applyNamesToStore,
+  emailToName,
   applyCategoriesToStore,
   parseCategories,
   categoryFor,
