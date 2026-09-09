@@ -35,6 +35,25 @@ const MEMORY_MODE =
   /^(1|true|yes|on)$/i.test(process.env.NO_DB || '') ||
   String(process.env.DB_DRIVER || '').toLowerCase() === 'memory';
 
+// ---------------------------------------------------------------------------
+// FIRESTORE mode (user, 2026-09-09)
+// ---------------------------------------------------------------------------
+// A free, persistent, non-SQL datastore (Firebase Firestore, Spark plan). It
+// takes PRECEDENCE over both MySQL and the local file store when configured, so
+// data survives Railway redeploys (which wipe the container's local disk).
+// Configure with EITHER:
+//   FIREBASE_SERVICE_ACCOUNT = the whole service-account JSON (or base64 of it)
+// OR the three fields:
+//   FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY
+// OR set DB_DRIVER=firestore and rely on GOOGLE_APPLICATION_CREDENTIALS / ADC.
+// The whole store lives as ONE document per collection in a `kv_store`
+// Firestore collection — exactly mirroring the MySQL kv_store layout below.
+const FIRESTORE_MODE =
+  String(process.env.DB_DRIVER || '').toLowerCase() === 'firestore' ||
+  /^(1|true|yes|on)$/i.test(process.env.FIRESTORE || '') ||
+  !!(process.env.FIREBASE_SERVICE_ACCOUNT ||
+     (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_PRIVATE_KEY));
+
 const STORE_FILE = process.env.DB_FILE || path.join(__dirname, '..', 'data', 'db.json');
 
 function loadFromFile() {
@@ -74,6 +93,54 @@ function emptyDb() {
 let cache = null;
 let pool = null;
 let writeChain = Promise.resolve();
+
+// ---- Firestore state ----
+let fsDb = null;      // Firestore instance
+let fsApp = null;     // the initialised app (so scripts can delete it to exit)
+let fsFieldValue = null;
+
+// The Firestore collection that holds one document per top-level KEY.
+function firestoreCollection() { return process.env.FIRESTORE_COLLECTION || 'kv_store'; }
+
+// Build a service-account credential from the environment. Supports the whole
+// JSON pasted into one variable (optionally base64-encoded), or the three
+// individual fields (with escaped "\n" in the private key un-escaped — the usual
+// Railway/Heroku gotcha). Returns null to fall back to application-default creds.
+function loadServiceAccount() {
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT || process.env.GOOGLE_SERVICE_ACCOUNT;
+  if (raw && raw.trim()) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      try {
+        return JSON.parse(Buffer.from(raw.trim(), 'base64').toString('utf8'));
+      } catch {
+        throw new Error('FIREBASE_SERVICE_ACCOUNT is set but is not valid JSON (or base64-encoded JSON)');
+      }
+    }
+  }
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  let privateKey = process.env.FIREBASE_PRIVATE_KEY;
+  if (projectId && clientEmail && privateKey) {
+    privateKey = privateKey.replace(/\\n/g, '\n');
+    return { projectId, clientEmail, privateKey };
+  }
+  return null;
+}
+
+function initFirestoreApp() {
+  const { initializeApp, getApps, getApp, cert, applicationDefault } = require('firebase-admin/app');
+  const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+  if (getApps().length) {
+    fsApp = getApp();
+  } else {
+    const sa = loadServiceAccount();
+    fsApp = initializeApp(sa ? { credential: cert(sa) } : { credential: applicationDefault() });
+  }
+  fsDb = getFirestore(fsApp);
+  fsFieldValue = FieldValue;
+}
 
 // Parse a MySQL connection URL (mysql://user:pass@host:port/dbname) into parts.
 // Railway/other PaaS often expose the database only as a single URL variable.
@@ -139,6 +206,22 @@ async function ensureSchema() {
 // Connect, create the table if needed, and load the whole store into memory.
 // Must be awaited before any db.get() call.
 async function init() {
+  if (FIRESTORE_MODE) {
+    initFirestoreApp();
+    const snap = await fsDb.collection(firestoreCollection()).get();
+    const loaded = {};
+    snap.forEach((doc) => {
+      const d = doc.data();
+      if (d && typeof d.v === 'string') {
+        try { loaded[doc.id] = JSON.parse(d.v); } catch { /* skip a corrupt doc */ }
+      }
+    });
+    const base = emptyDb();
+    for (const k of KEYS) if (loaded[k] !== undefined) base[k] = loaded[k];
+    cache = base;
+    console.log(`✓ Firestore connected — store loaded from "${firestoreCollection()}" collection.`);
+    return cache;
+  }
   if (MEMORY_MODE) {
     cache = loadFromFile();
     console.log(`⚠  DB DISABLED — running on local file store (${STORE_FILE}). No MySQL used.`);
@@ -171,6 +254,23 @@ function get() {
 // Serialise the current cache and upsert every collection in one transaction,
 // serialised through writeChain so overlapping saves never interleave.
 function persist() {
+  if (FIRESTORE_MODE) {
+    // Serialise each collection to JSON and upsert all six documents in one
+    // atomic batch, serialised through writeChain so overlapping saves never
+    // interleave — exactly like the MySQL transaction path.
+    const snapshot = {};
+    const base = emptyDb();
+    for (const k of KEYS) snapshot[k] = JSON.stringify(cache[k] !== undefined ? cache[k] : base[k]);
+    writeChain = writeChain.then(async () => {
+      const col = fsDb.collection(firestoreCollection());
+      const batch = fsDb.batch();
+      for (const k of KEYS) {
+        batch.set(col.doc(k), { v: snapshot[k], updatedAt: fsFieldValue.serverTimestamp() });
+      }
+      await batch.commit();
+    });
+    return writeChain;
+  }
   if (MEMORY_MODE) {
     // Serialise through writeChain just like the MySQL path so overlapping saves
     // never interleave, but flush to the local JSON file instead of the database.
@@ -214,6 +314,14 @@ async function reset() {
 
 // Close the pool so short-lived scripts (seed/reset/db:test) can exit cleanly.
 async function close() {
+  if (FIRESTORE_MODE) {
+    if (fsApp) {
+      const { deleteApp } = require('firebase-admin/app');
+      try { await deleteApp(fsApp); } catch { /* noop */ }
+      fsApp = null; fsDb = null;
+    }
+    return;
+  }
   if (MEMORY_MODE) return; // no pool to close in file-store mode
   if (pool) {
     await pool.end();
@@ -228,4 +336,9 @@ function nextId(collection) {
   return arr.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1;
 }
 
-module.exports = { init, get, save, reset, close, nextId, dbConfig, KEYS };
+// Which backend is active, for boot logging / error messages.
+function driver() {
+  return FIRESTORE_MODE ? 'firestore' : MEMORY_MODE ? 'file' : 'mysql';
+}
+
+module.exports = { init, get, save, reset, close, nextId, dbConfig, driver, KEYS };

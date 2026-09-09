@@ -1232,10 +1232,19 @@ db.init()
     });
   })
   .catch((err) => {
-    const cfg = db.dbConfig();
-    console.error('\n✖ Could not connect to the MySQL database.');
-    console.error(`  Tried ${cfg.user}@${cfg.host}:${cfg.port}/${cfg.database}`);
-    console.error('  Check your DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME (.env or environment).');
+    const driver = db.driver();
+    if (driver === 'firestore') {
+      console.error('\n✖ Could not connect to Firestore.');
+      console.error('  Check FIREBASE_SERVICE_ACCOUNT (or FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY)');
+      console.error('  and that the Firestore database has been created for this project.');
+    } else if (driver === 'mysql') {
+      const cfg = db.dbConfig();
+      console.error('\n✖ Could not connect to the MySQL database.');
+      console.error(`  Tried ${cfg.user}@${cfg.host}:${cfg.port}/${cfg.database}`);
+      console.error('  Check your DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME (.env or environment).');
+    } else {
+      console.error('\n✖ Could not initialise the datastore.');
+    }
     console.error(`  ${err.code || ''} ${err.message}\n`);
     process.exit(1);
   });

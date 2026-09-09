@@ -1,7 +1,56 @@
 # Deploying the JW BNGM Tracker
 
-- **Railway (managed MySQL, easiest)** — see the [Railway section](#deploying-to-railway-mysql) below.
+- **Railway + Firestore (free, persistent, no SQL — recommended)** — see the [Firestore section](#deploying-to-railway-with-firestore-free) below.
+- **Railway (managed MySQL)** — see the [Railway MySQL section](#deploying-to-railway-mysql).
 - **Hostinger VPS (self-managed)** — the rest of this document.
+
+---
+
+## Deploying to Railway with Firestore (free)
+
+Railway runs the Node app; **Firebase Firestore** stores the data for free and,
+unlike Railway's local disk, it **survives every redeploy**. Firestore is a
+document (non-SQL) database on Google's free "Spark" plan — no credit card. The
+app creates and seeds itself on first boot; there is nothing to import.
+
+### 1. Create the Firestore database (one time, ~3 min)
+1. Go to <https://console.firebase.google.com> → **Add project** (any name, e.g.
+   `bngm-tracker`). You can disable Google Analytics.
+2. In the left menu → **Build → Firestore Database → Create database**.
+   Choose **Production mode** and any location; click **Enable**.
+3. Get a key: gear icon → **Project settings → Service accounts →
+   Generate new private key**. This downloads a JSON file — keep it secret.
+
+### 2. Point the app at Firestore
+Open the Railway **app service → Variables** and add:
+
+```
+FIREBASE_SERVICE_ACCOUNT=<paste the ENTIRE contents of the downloaded JSON>
+JWT_SECRET=<paste output of: openssl rand -hex 32>
+```
+
+- Paste the whole JSON as the value (multi-line pastes fine in Railway's
+  variable editor). If your setup mangles newlines, base64-encode the file
+  (`base64 -w0 serviceAccount.json`) and paste that instead — the app decodes it.
+- Do **not** set `DB_DISABLED` — Firestore takes precedence automatically when
+  `FIREBASE_SERVICE_ACCOUNT` is present. Do **not** set `PORT` (Railway injects it).
+- No MySQL service is needed. You can delete it if you added one earlier.
+
+> Prefer three separate variables? Use `FIREBASE_PROJECT_ID`,
+> `FIREBASE_CLIENT_EMAIL` and `FIREBASE_PRIVATE_KEY` instead (wrap the private key
+> in quotes; keep the literal `\n` sequences — the app un-escapes them).
+
+### 3. Deploy and verify
+Railway redeploys on save. In **Deploy Logs** you should see
+`✓ Firestore connected …`, then the first-run seed lines, then
+`JW BNGM Tracker running`. Open the public URL (Settings → Networking →
+Generate Domain), sign in as **Super**, and immediately change every password in
+**Assumptions → role passwords**. Redeploy again to confirm your data is still
+there.
+
+Backups: **Super → Data backup download** exports the whole store as JSON. In the
+Firebase console you can also see the data under **Firestore Database →
+`kv_store`** (one document per collection).
 
 ---
 
