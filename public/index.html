@@ -237,7 +237,10 @@
       <section id="view-accounts" class="view hidden">
         <div class="view-head">
           <h2>Client List</h2>
-          <button id="addAccountBtn" class="btn btn-primary">+ New client</button>
+          <div class="view-head-actions">
+            <button id="allClientsAllDeptsBtn" class="btn hidden" title="Add every client to every department in one click">✓ All clients → all departments</button>
+            <button id="addAccountBtn" class="btn btn-primary">+ New client</button>
+          </div>
         </div>
         <p class="muted section-note">Super Admin can tick which departments each client belongs to, and rename or delete clients. Departments can add clients (locked to their own department) but only Super Admin can edit or delete them.</p>
         <div class="table-scroll glass"><table id="accountsTable" class="data"></table></div>

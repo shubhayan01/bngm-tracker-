@@ -1611,6 +1611,19 @@ function renderAccountsSuper() {
   $$('.rename-client').forEach((b) => (b.onclick = () => renameClient(b.dataset.name)));
   $$('.del-client').forEach((b) => (b.onclick = () => deleteClient(b.dataset.name)));
   $('#addAccountBtn').classList.remove('hidden');
+  // Super-only: the one-click "every client → every department" button lives beside
+  // "+ New client" and is only meaningful here.
+  const allBtn = $('#allClientsAllDeptsBtn');
+  if (allBtn) {
+    const allCovered = wings.length > 0 && names.length > 0 &&
+      names.every((n) => { const a = groups.get(n) || []; return wings.every((w) => a.some((x) => (x.wing || '') === w)); });
+    allBtn.classList.remove('hidden');
+    allBtn.disabled = !wings.length || !names.length || allCovered;
+    allBtn.title = allCovered
+      ? 'Every client is already in every department'
+      : 'Add every client to every department in one click';
+    allBtn.onclick = assignAllClientsAllDepts;
+  }
 }
 
 // Departments: read-only list of their own clients (add via the button; no edit/delete).
@@ -1628,6 +1641,8 @@ function renderAccountsDept() {
   });
   $('#accountsTable').innerHTML = html + '</tbody>';
   $('#addAccountBtn').classList.toggle('hidden', ro || !state.roleInfo.canCreateAccounts);
+  const allBtn = $('#allClientsAllDeptsBtn'); // Super-only — never shown to department roles
+  if (allBtn) allBtn.classList.add('hidden');
 }
 
 // Super — tick/untick a department for a client. Ticking repurposes an unassigned
@@ -1679,6 +1694,54 @@ async function setAllClientDepts(name, checked) {
     renderAccounts();
     toast(checked ? 'Added to every department' : 'Removed from every department');
   } catch (e) { toast(e.message); renderAccounts(); }
+}
+
+// Super — one click: add EVERY client to EVERY department. Walks all clients,
+// finds the (client, department) pairs that don't exist yet, repurposing any
+// unassigned rows first (keeping their data) before creating new ones, then
+// refreshes once at the end. A no-op reports "already covered".
+async function assignAllClientsAllDepts() {
+  const wings = state.boot.wings || [];
+  const groups = clientGroups();
+  const names = [...groups.keys()];
+  if (!wings.length) { toast('No departments defined yet'); return; }
+  if (!names.length) { toast('No clients yet'); return; }
+
+  // Count the work up front so we can confirm with a real number and skip a no-op.
+  let toAdd = 0;
+  for (const name of names) {
+    const accs = groups.get(name) || [];
+    toAdd += wings.filter((w) => !accs.some((a) => (a.wing || '') === w)).length;
+  }
+  if (!toAdd) { toast('Every client is already in every department'); return; }
+  if (!confirm(`Add ${names.length} client(s) to all ${wings.length} department(s)? This will create ${toAdd} client-department assignment(s).`)) return;
+
+  const btn = $('#allClientsAllDeptsBtn');
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Assigning…'; }
+  let done = 0;
+  try {
+    for (const name of names) {
+      const accs = groups.get(name) || [];
+      const missing = wings.filter((w) => !accs.some((a) => (a.wing || '') === w));
+      const empties = accs.filter((a) => !a.wing); // repurpose empty-wing rows first, keeping their data
+      for (const w of missing) {
+        const empty = empties.shift();
+        if (empty) await api('/accounts/' + empty.id, { method: 'PUT', body: JSON.stringify({ wing: w }) });
+        else await api('/accounts', { method: 'POST', body: JSON.stringify({ name, wing: w }) });
+        done++;
+        if (btn) btn.textContent = `Assigning… ${done}/${toAdd}`;
+      }
+    }
+    state.boot = await api('/bootstrap');
+    renderAccounts();
+    toast(`Done — ${done} assignment(s) across every department`);
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = orig; }
+    toast(e.message);
+    try { state.boot = await api('/bootstrap'); } catch { /* keep current view */ }
+    renderAccounts();
+  }
 }
 
 function renameClient(name) {
