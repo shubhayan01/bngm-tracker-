@@ -1696,10 +1696,10 @@ async function setAllClientDepts(name, checked) {
   } catch (e) { toast(e.message); renderAccounts(); }
 }
 
-// Super — one click: add EVERY client to EVERY department. Walks all clients,
-// finds the (client, department) pairs that don't exist yet, repurposing any
-// unassigned rows first (keeping their data) before creating new ones, then
-// refreshes once at the end. A no-op reports "already covered".
+// Super — one click: add EVERY client to EVERY department. This is a SINGLE
+// server call (/accounts/assign-all-departments) that does all the work in one
+// save, then one bootstrap refresh — so it no longer streams a request (and a
+// whole-store save) per client-department pair (user, 2026-09-11).
 async function assignAllClientsAllDepts() {
   const wings = state.boot.wings || [];
   const groups = clientGroups();
@@ -1719,23 +1719,11 @@ async function assignAllClientsAllDepts() {
   const btn = $('#allClientsAllDeptsBtn');
   const orig = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'Assigning…'; }
-  let done = 0;
   try {
-    for (const name of names) {
-      const accs = groups.get(name) || [];
-      const missing = wings.filter((w) => !accs.some((a) => (a.wing || '') === w));
-      const empties = accs.filter((a) => !a.wing); // repurpose empty-wing rows first, keeping their data
-      for (const w of missing) {
-        const empty = empties.shift();
-        if (empty) await api('/accounts/' + empty.id, { method: 'PUT', body: JSON.stringify({ wing: w }) });
-        else await api('/accounts', { method: 'POST', body: JSON.stringify({ name, wing: w }) });
-        done++;
-        if (btn) btn.textContent = `Assigning… ${done}/${toAdd}`;
-      }
-    }
+    const r = await api('/accounts/assign-all-departments', { method: 'POST', body: JSON.stringify({}) });
     state.boot = await api('/bootstrap');
     renderAccounts();
-    toast(`Done — ${done} assignment(s) across every department`);
+    toast(`Done — ${r.added} assignment(s) across every department`);
   } catch (e) {
     if (btn) { btn.disabled = false; btn.textContent = orig; }
     toast(e.message);

@@ -291,6 +291,43 @@ app.delete('/api/accounts/:id', auth, requirePerm('canManageClients'), (req, res
   db.save().then(() => res.json({ ok: true, id, removedEntries: entriesBefore - store.entries.length }));
 });
 
+// Super only: add EVERY client to EVERY department in one shot. Done entirely
+// in memory with a SINGLE db.save() at the end, instead of the client firing one
+// request (and one whole-store save) per client-department pair — which streamed
+// fetches for a long time on large client lists (user, 2026-09-11). Repurposes any
+// unassigned (empty-wing) row first so its data is kept, then creates the rest.
+app.post('/api/accounts/assign-all-departments', auth, requirePerm('canManageClients'), (req, res) => {
+  const store = db.get();
+  const wings = (settings().wings || []).map((w) => String(w));
+  if (!wings.length) return res.status(400).json({ error: 'No departments defined yet' });
+
+  // Group existing accounts by client name (case-insensitively), keeping the
+  // original display name from the first row seen.
+  const byName = new Map(); // key -> { name, accs: [] }
+  for (const a of store.accounts) {
+    const key = String(a.name || '').trim().toLowerCase();
+    if (!key) continue;
+    if (!byName.has(key)) byName.set(key, { name: a.name, accs: [] });
+    byName.get(key).accs.push(a);
+  }
+
+  const gmHealthy = settings().assumptions.gmHealthy;
+  let added = 0;
+  for (const { name, accs } of byName.values()) {
+    const missing = wings.filter((w) => !accs.some((a) => (a.wing || '') === w));
+    const empties = accs.filter((a) => !a.wing); // reuse unassigned rows first (keep their data)
+    for (const w of missing) {
+      const empty = empties.shift();
+      if (empty) empty.wing = w;
+      else store.accounts.push({ id: db.nextId('accounts'), name, wing: w, budgetGM: gmHealthy });
+      added++;
+    }
+  }
+
+  if (!added) return res.json({ ok: true, added: 0, clients: byName.size, departments: wings.length });
+  db.save().then(() => res.json({ ok: true, added, clients: byName.size, departments: wings.length }));
+});
+
 // ---------- tools catalog ----------
 // View: Super sees all; other roles see only their own department's tools.
 // Edit / delete: Super only.
