@@ -493,7 +493,13 @@ function plannedRefBlock() {
   const planRes = d.resourcesPlan || [];
   const planOut = d.outsourcingPlan || [];
   const planNotes = (d.notesPlan || '').trim();
-  if (!planRev && !planRes.length && !planOut.length && !planNotes) return '';
+  // #18 — for Content clients, show the planned word count alongside the plan reference.
+  const acc = state.boot.accounts.find((a) => a.id === entry.accountId);
+  const isContent = acc && acc.wing === 'Content Creation';
+  const planWc = Number(d.wcPlanned) || 0;
+  const wcBlock = (isContent && planWc)
+    ? `<div class="pr-line"><span>Planned word count</span><span class="val">${planWc.toLocaleString('en-IN')} words</span></div>` : '';
+  if (!planRev && !planRes.length && !planOut.length && !planNotes && !(isContent && planWc)) return '';
   const resLines = planRes.length
     ? planRes.map((r) => {
       const a = assocById(r.id);
@@ -510,6 +516,7 @@ function plannedRefBlock() {
   return `<div class="planned-ref">
     <div class="pr-head">📋 Planned reference — what you budgeted for this client &amp; month</div>
     <div class="pr-line"><span>Planned revenue</span><span class="val">${inr(planRev)}</span></div>
+    ${wcBlock}
     <div class="pr-sub">Planned resources &amp; expected hours</div>
     ${resLines}
     ${outBlock}
@@ -601,15 +608,23 @@ function wireResSearch() {
     box.innerHTML = matches.map((a) =>
       `<div class="res-match" data-id="${a.id}"><span class="rm-left">${esc(assocLabel(a))} ${catTag(a)}</span><span class="rm-email muted small">${esc(assocEmail(a))}</span></div>`).join('');
     box.classList.remove('hidden');
-    $$('.res-match[data-id]', box).forEach((m) => (m.onclick = () => {
-      const id = Number(m.dataset.id);
-      if (!entry.picked) entry.picked = new Set();
-      entry.picked.add(id);
-      inp.value = ''; close();
-      renderResRows(); renderPreview();
-    }));
   };
-  inp.onblur = () => setTimeout(close, 150); // let a match click register first
+  // Select on mousedown/touchstart (fires BEFORE the input's blur) and preventDefault so
+  // focus never leaves the field — this fixes trackpads/laptops where the old blur-then-
+  // click race dropped the selection (user, 2026-09-14).
+  const pick = (ev) => {
+    const m = ev.target.closest('.res-match[data-id]');
+    if (!m) return;
+    ev.preventDefault();
+    const id = Number(m.dataset.id);
+    if (!entry.picked) entry.picked = new Set();
+    entry.picked.add(id);
+    inp.value = ''; close();
+    renderResRows(); renderPreview();
+  };
+  box.addEventListener('mousedown', pick);
+  box.addEventListener('touchstart', pick, { passive: false });
+  inp.onblur = () => setTimeout(close, 200); // close only after a pick has had its chance
 }
 
 function renderEntryBody() {
@@ -867,6 +882,65 @@ function manageTeam() {
 $('#dashRefresh').addEventListener('click', loadDashboard);
 { const dm = $('#dashMode'); if (dm) dm.addEventListener('change', loadDashboard); }
 
+// ---- CSV export of reports (#19, user 2026-09-14) ----
+function csvCellText(cell) {
+  const clone = cell.cloneNode(true);
+  clone.querySelectorAll('.usd').forEach((u) => u.remove()); // drop hidden "≈ $x" hover text
+  return (clone.textContent || '').replace(/\s+/g, ' ').trim();
+}
+function csvEscape(v) {
+  const s = String(v == null ? '' : v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function tableToCsvRows(table) {
+  const rows = [];
+  table.querySelectorAll('tr').forEach((tr) => {
+    const cells = [...tr.children].filter((c) => c.tagName === 'TH' || c.tagName === 'TD');
+    if (cells.length) rows.push(cells.map(csvCellText));
+  });
+  return rows;
+}
+function tableTitle(table) {
+  let node = table.closest('.table-scroll') || table;
+  while (node && node.previousElementSibling) {
+    node = node.previousElementSibling;
+    if (node.matches && node.matches('h3')) return node.textContent.trim();
+    const h = node.querySelector && node.querySelector('h3');
+    if (h) return h.textContent.trim();
+  }
+  return '';
+}
+function tablesToCsv(tables) {
+  return tables.map((t) => {
+    const rows = tableToCsvRows(t);
+    if (!rows.length) return '';
+    const title = tableTitle(t);
+    const head = title ? [[title]] : [];
+    return head.concat(rows).map((r) => r.map(csvEscape).join(',')).join('\r\n');
+  }).filter(Boolean).join('\r\n\r\n');
+}
+function downloadCsv(filename, csv) {
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = el('a'); a.href = url; a.download = filename; document.body.appendChild(a);
+  a.click(); a.remove(); URL.revokeObjectURL(url);
+}
+function downloadActiveReportCsv() {
+  const tab = state.reportTab || 'overview';
+  const block = document.querySelector(`#view-dashboard .report-block[data-report="${tab}"]`);
+  const tables = block ? [...block.querySelectorAll('table.data')] : [];
+  if (!tables.length) { toast('Nothing to download'); return; }
+  downloadCsv(`bngm-${tab}-${new Date().toISOString().slice(0, 10)}.csv`, tablesToCsv(tables));
+  toast('CSV downloaded');
+}
+{ const b = $('#dashDownload'); if (b) b.onclick = downloadActiveReportCsv; }
+{ const b = $('#detailDownload'); if (b) b.onclick = () => {
+  const tables = [...$('#detailBody').querySelectorAll('table.data')];
+  if (!tables.length) { toast('Nothing to download'); return; }
+  downloadCsv(`bngm-detail-${new Date().toISOString().slice(0, 10)}.csv`, tablesToCsv(tables));
+  toast('CSV downloaded');
+}; }
+
 async function loadDashboard() {
   const mode = ($('#dashMode') && $('#dashMode').value) || 'auto';
   const d = await api('/dashboard?mode=' + mode);
@@ -875,7 +949,7 @@ async function loadDashboard() {
   renderMonthly(d.monthly);
   setupPlanActual(d.comparison, d.comparisonYtd); // Plan vs Actual w/ built-in month select
   setupClientCompare(d.comparisonByClient); // Plan vs Actual per customer
-  setupResources(d.resourceByClient, d.resourceByPerson); // Resources plan vs actual + Asana
+  setupResources(d.resourceByClient, d.resourceByPerson, d.resourceByDept); // Resources plan vs actual + Asana
   renderToolsReport();                     // Tools budget vs actual spend
   renderWings(d.wingSummary);
   setupRanking(d.ranking);
@@ -1064,9 +1138,10 @@ function renderClientCompare() {
 // ---- Resources: planned vs actual hours (user, 2026-08-26) ----
 // Two scopes: "By client" (booked hours + ₹ cost per client) and "By resource"
 // (each person's planned vs actual load, with a link to their Asana assignments).
-function setupResources(byClient, byPerson) {
+function setupResources(byClient, byPerson, byDept) {
   state.resByClient = byClient || [];
   state.resByPerson = byPerson || [];
+  state.resByDept = byDept || [];
   state.resScope = state.resScope || 'client';
   const seg = $('#resScope');
   if (seg) {
@@ -1089,6 +1164,34 @@ function renderResources() {
   if (!table) return;
   const scope = state.resScope || 'client';
   const q = (($('#resSearch') && $('#resSearch').value) || '').trim().toLowerCase();
+
+  if (scope === 'dept') {
+    // #9 — segregated by department: each department, then the people who booked hours
+    // in it, plan vs actual. Search matches a department name or a person's name.
+    const depts = (state.resByDept || []).map((d) => ({
+      ...d,
+      people: d.people.filter((p) => !q || String(p.name || '').toLowerCase().includes(q)),
+    })).filter((d) => !q || String(d.dept || '').toLowerCase().includes(q) || d.people.length);
+    const head = ['Department / resource', 'Plan hrs', 'Actual hrs', 'Δ hrs'];
+    let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l sticky-col' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
+    if (!depts.length) html += `<tr><td colspan="4" class="l muted">${(state.resByDept || []).length ? 'Nothing matches the filter.' : 'No resource hours logged yet.'}</td></tr>`;
+    let ph = 0, ah = 0;
+    depts.forEach((d) => {
+      ph += d.planHours; ah += d.actualHours;
+      html += `<tr class="dept-head"><td class="l sticky-col"><b>${esc(d.dept || '—')}</b></td>` +
+        `<td><b>${hrsFmt(d.planHours)}</b></td><td><b>${hrsFmt(d.actualHours)}</b></td>${varHrsCell(d.hoursVariance)}</tr>`;
+      d.people.forEach((p) => {
+        html += `<tr><td class="l sticky-col" style="padding-left:26px">${esc(p.name)}</td>` +
+          `<td>${hrsFmt(p.planHours)}</td><td>${hrsFmt(p.actualHours)}</td>${varHrsCell(p.hoursVariance)}</tr>`;
+      });
+    });
+    if (depts.length) {
+      html += `<tr class="row-total"><td class="l sticky-col"><b>Total</b></td>` +
+        `<td>${hrsFmt(ph)}</td><td>${hrsFmt(ah)}</td>${varHrsCell(ah - ph)}</tr>`;
+    }
+    table.innerHTML = html + '</tbody>';
+    return;
+  }
 
   if (scope === 'client') {
     const rows = (state.resByClient || []).filter((r) => !q || String(r.name || '').toLowerCase().includes(q));
@@ -1386,7 +1489,10 @@ function amtInr(amount, currency) {
   return currency === 'INR' ? c : c * fxRate();
 }
 function toolMonthlyInr(t) {
-  return amtInr(t.cost, t.currency);
+  // #15 — non-common tools multiply their unit cost by quantity (e.g. 3 seats).
+  // Common tools' cost is already the sum of their per-department split.
+  const q = t.common ? 1 : Math.max(1, Number(t.quantity) || 1);
+  return amtInr(t.cost, t.currency) * q;
 }
 // Human-readable per-department split for a common tool (used as a tooltip).
 function commonSplitLabel(t) {
@@ -1409,32 +1515,47 @@ function toolSpentToDate(t) {
 }
 
 function renderTools() {
-  const tools = state.boot.tools || [];
+  const all = state.boot.tools || [];
   const canEdit = state.roleInfo.canManageTools;
   const tbody = $('#toolsTable');
-  if (!tools.length) {
+  // #7 — wire the search box (idempotent) and filter by name / description / department.
+  const searchEl = $('#toolSearch');
+  if (searchEl && !searchEl._wired) { searchEl._wired = true; searchEl.oninput = () => { state.toolQuery = searchEl.value; renderTools(); }; }
+  const q = (state.toolQuery || '').trim().toLowerCase();
+  const tools = q ? all.filter((t) =>
+    String(t.name || '').toLowerCase().includes(q) ||
+    String(t.description || '').toLowerCase().includes(q) ||
+    String(t.common ? 'common all departments' : (t.department || '')).toLowerCase().includes(q)) : all;
+  if (!all.length) {
     tbody.innerHTML = `<tbody><tr><td colspan="7" class="l muted">No tools yet.${canEdit ? ' Use “+ New tool”.' : ''}</td></tr></tbody>`;
     $('#toolsCumulative').innerHTML = '';
     return;
   }
   const head = ['Tool', 'Dept', 'Cost / mo', 'Started', 'Status', 'Spent to date', canEdit ? '' : ''];
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i < 2 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
+  if (!tools.length) html += `<tr><td colspan="7" class="l muted">No tools match “${esc(state.toolQuery || '')}”.</td></tr>`;
   tools.forEach((t) => {
-    const cost = Number(t.cost) || 0;
-    const costTxt = !cost ? 'Free'
-      : t.currency === 'INR' ? `${inrUsd(cost)}` : `<span class="inr-cell" title="≈ ${inr(cost * fxRate())}">$${cost.toLocaleString('en-US')}<span class="usd">≈ ${inr(cost * fxRate())}</span></span>`;
+    const qty = t.common ? 1 : Math.max(1, Number(t.quantity) || 1);
+    const unit = Number(t.cost) || 0;
+    const unitTxt = !unit ? 'Free'
+      : t.currency === 'INR' ? `${inrUsd(unit)}` : `<span class="inr-cell" title="≈ ${inr(unit * fxRate())}">$${unit.toLocaleString('en-US')}<span class="usd">≈ ${inr(unit * fxRate())}</span></span>`;
+    // With a quantity > 1, show "unit × N" and the resulting monthly total.
+    const costTxt = qty > 1
+      ? `${unitTxt} × ${qty}<div class="muted small">${inr(toolMonthlyInr(t))}/mo</div>`
+      : `${unitTxt}<span class="per">/mo</span>`;
     const stopped = t.active === false;
     const statusTxt = stopped ? `<span class="pill atrisk">■ Stopped</span>` : `<span class="pill healthy">▶ Active</span>`;
-    html += `<tr class="${stopped ? 'tool-stopped' : ''}">
-      <td class="l"><b>${esc(t.name)}</b>${t.description ? `<div class="muted small">${esc(t.description)}</div>` : ''}${t.why ? `<div class="why-inline">Why: ${esc(t.why)}</div>` : ''}</td>
-      <td class="l">${t.common ? `<span class="tag-common" title="${esc(commonSplitLabel(t))}">Common</span>` : esc(t.department || 'General')}</td>
-      <td>${costTxt}<span class="per">/mo</span></td>
+    html += `<tr class="tool-row ${stopped ? 'tool-stopped' : ''}" data-id="${t.id}">
+      <td class="l"><b>${esc(t.name)}</b>${t.common ? ` <span class="muted small">(shared)</span>` : (qty > 1 ? ` <span class="muted small">×${qty}</span>` : '')}${t.description ? `<div class="muted small">${esc(t.description)}</div>` : ''}${t.why ? `<div class="why-inline">Why: ${esc(t.why)}</div>` : ''}</td>
+      <td class="l">${t.common ? `<span class="tag-common" title="${esc(commonSplitLabel(t))}">All departments</span>` : esc(t.department || '')}</td>
+      <td>${costTxt}</td>
       <td>${t.startDate || '—'}${stopped && t.stopDate ? `<div class="muted small">stopped ${t.stopDate}</div>` : ''}</td>
       <td>${statusTxt}</td>
       <td>${inr(toolSpentToDate(t))}</td>
       ${canEdit ? `<td class="tool-actions-cell">
         <button class="btn btn-sm tool-stop" data-id="${t.id}">${stopped ? 'Resume' : 'Stop'}</button>
         <button class="btn btn-sm edit-tool" data-id="${t.id}">Edit</button>
+        <button class="btn btn-sm tool-copy" data-id="${t.id}" title="Make an editable copy">Copy</button>
         <button class="btn btn-sm btn-danger del-tool" data-id="${t.id}">Del</button>
       </td>` : '<td></td>'}
     </tr>`;
@@ -1443,8 +1564,53 @@ function renderTools() {
   $$('.edit-tool').forEach((b) => (b.onclick = () => editTool(Number(b.dataset.id))));
   $$('.del-tool').forEach((b) => (b.onclick = () => deleteTool(Number(b.dataset.id))));
   $$('.tool-stop').forEach((b) => (b.onclick = () => toggleToolActive(Number(b.dataset.id))));
+  $$('.tool-copy').forEach((b) => (b.onclick = () => duplicateTool(Number(b.dataset.id))));
+  // #15 — right-click a tool row for a "Make a copy" (+ edit/delete) context menu.
+  if (canEdit) {
+    $$('#toolsTable tr.tool-row').forEach((tr) => (tr.oncontextmenu = (e) => {
+      e.preventDefault();
+      const id = Number(tr.dataset.id);
+      const t = (state.boot.tools || []).find((x) => x.id === id);
+      const stopped = t && t.active === false;
+      showContextMenu(e.clientX, e.clientY, [
+        { label: '📄 Make a copy', fn: () => duplicateTool(id) },
+        { label: '✎ Edit', fn: () => editTool(id) },
+        { label: stopped ? '▶ Resume' : '■ Stop', fn: () => toggleToolActive(id) },
+        { label: '🗑 Delete', danger: true, fn: () => deleteTool(id) },
+      ]);
+    }));
+  }
 
-  renderToolsCumulative(tools);
+  renderToolsCumulative(all);
+}
+
+// #15 — open the tool editor pre-filled with a copy of an existing tool (saved as new).
+function duplicateTool(id) {
+  const t = (state.boot.tools || []).find((x) => x.id === id);
+  if (!t) return;
+  const copy = JSON.parse(JSON.stringify(t));
+  delete copy.id;
+  copy.name = (t.name || 'Tool') + ' (copy)';
+  editTool(null, copy);
+}
+
+// Lightweight floating context menu (used by the Tools right-click). One at a time.
+function showContextMenu(x, y, items) {
+  const old = $('#ctxMenu'); if (old) old.remove();
+  const menu = el('div', 'ctx-menu'); menu.id = 'ctxMenu';
+  items.forEach((it) => {
+    const b = el('button', 'ctx-item' + (it.danger ? ' danger' : ''), it.label);
+    b.type = 'button';
+    b.onclick = () => { menu.remove(); it.fn(); };
+    menu.appendChild(b);
+  });
+  document.body.appendChild(menu);
+  // Keep the menu on-screen.
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.min(x, window.innerWidth - r.width - 8) + 'px';
+  menu.style.top = Math.min(y, window.innerHeight - r.height - 8) + 'px';
+  const close = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('mousedown', close); document.removeEventListener('scroll', close, true); } };
+  setTimeout(() => { document.addEventListener('mousedown', close); document.addEventListener('scroll', close, true); }, 0);
 }
 
 function renderToolsCumulative(tools) {
@@ -1506,62 +1672,77 @@ async function toggleToolActive(id) {
   toast(nowStop ? 'Tool stopped' : 'Tool resumed');
 }
 
-function editTool(id) {
-  const t = id ? (state.boot.tools || []).find((x) => x.id === id) : null;
-  // Only Super Admin gets the "common tool" option (user, 2026-08-21).
-  const isSuper = !!state.roleInfo.canEditSettings;
-  const depts = [...(state.boot.wings || []), 'General', 'All departments'];
-  const curDept = t ? t.department : 'General';
-  const deptOpts = [...new Set([curDept, ...depts])].map((d) => `<option value="${esc(d)}" ${t && t.department === d ? 'selected' : ''}>${esc(d)}</option>`).join('');
-  // Departments a common tool's cost can be split across.
-  const splitDepts = [...new Set([...(state.boot.wings || []), 'General', ...Object.keys((t && t.deptCosts) || {})])];
+// Tool editor. `id` edits an existing tool; `copyFrom` (with id null) pre-fills a
+// duplicate saved as a new tool (#15). Department "All departments" IS the shared /
+// common tool, whose cost is split per department (#16 — "General" was removed).
+function editTool(id, copyFrom) {
+  const ALL = 'All departments';
+  const t = id ? (state.boot.tools || []).find((x) => x.id === id) : (copyFrom || null);
+  const wings = state.boot.wings || [];
+  const curDept = t ? (t.common ? ALL : (t.department || wings[0] || ALL)) : (wings[0] || ALL);
+  const deptChoices = [...wings, ALL];
+  const deptOpts = [...new Set([curDept, ...deptChoices])]
+    .map((d) => `<option value="${esc(d)}" ${d === curDept ? 'selected' : ''}>${esc(d)}</option>`).join('');
+  const splitDepts = [...new Set([...wings, ...Object.keys((t && t.deptCosts) || {})])];
   const existingSplit = (t && t.deptCosts) || {};
   const dcKey = (d) => 'tdc_' + d.replace(/[^a-z0-9]/gi, '_');
+  const qty = t && !t.common ? Math.max(1, Number(t.quantity) || 1) : 1;
   const body = el('div');
   body.innerHTML = `
     <label class="field"><span>Tool name</span><input id="t_name" value="${t ? esc(t.name) : ''}" placeholder="e.g. Ahrefs" /></label>
     <label class="field"><span>What is it?</span><textarea id="t_desc" rows="2" placeholder="Short description">${t ? esc(t.description) : ''}</textarea></label>
-    <div class="field-row">
-      <label class="field" id="t_costWrap"><span>Cost / month</span><input id="t_cost" type="number" min="0" step="0.01" value="${t ? (t.cost || 0) : ''}" placeholder="0" /></label>
+    <label class="field"><span>Department</span><select id="t_dept">${deptOpts}</select>
+      <span class="muted small" style="margin-top:4px">Pick <b>All departments</b> for a shared tool whose cost is split per department.</span>
+    </label>
+    <div class="field-row" id="t_costRow">
+      <label class="field" id="t_costWrap"><span>Cost / month (per unit)</span><input id="t_cost" type="number" min="0" step="0.01" value="${t && !t.common ? (t.cost || 0) : ''}" placeholder="0" /></label>
       <label class="field"><span>Currency</span>
         <select id="t_cur">
           <option value="USD" ${!t || t.currency !== 'INR' ? 'selected' : ''}>USD ($)</option>
           <option value="INR" ${t && t.currency === 'INR' ? 'selected' : ''}>INR (₹)</option>
         </select>
       </label>
+      <label class="field" id="t_qtyWrap"><span>Quantity</span><input id="t_qty" type="number" min="1" step="1" value="${qty}" /></label>
     </div>
+    <div class="muted small" id="t_costTotal" style="margin:-6px 0 12px"></div>
     <div class="field-row">
       <label class="field"><span>Start date</span><input id="t_start" type="date" value="${t ? (t.startDate || '') : ''}" /></label>
       <label class="field"><span>Stop date (optional)</span><input id="t_stop" type="date" value="${t ? (t.stopDate || '') : ''}" /></label>
     </div>
-    ${isSuper ? `<label class="field checkbox"><input id="t_common" type="checkbox" ${t && t.common ? 'checked' : ''} /> <span>Common tool — cost budgeted per department (Super Admin)</span></label>` : ''}
-    <label class="field" id="t_deptWrap"><span>Department</span><select id="t_dept">${deptOpts}</select></label>
     <div class="field" id="t_deptCostsWrap" style="display:none">
-      <span>Cost by department (per month) — the tool's total is the sum</span>
+      <span>Cost by department (per month) — this shared tool's total is the sum</span>
       <div id="t_deptCosts" class="grid-form small">${splitDepts.map((d) => `<label>${esc(d)}<input id="${dcKey(d)}" data-dept="${esc(d)}" class="tdc-input" type="number" min="0" step="0.01" value="${existingSplit[d] || ''}" placeholder="0" /></label>`).join('')}</div>
-      <div class="muted small" style="margin-top:6px">Total: <b id="t_deptTotal">0</b> / mo <span id="t_deptCur"></span></div>
+      <div class="muted small" style="margin-top:6px">Total: <b id="t_deptTotal">0</b> / mo</div>
     </div>
     <label class="field"><span>Why is it needed?</span><textarea id="t_why" rows="2" placeholder="Reason / use case">${t ? esc(t.why) : ''}</textarea></label>`;
 
-  const commonEl = () => $('#t_common');
-  const isCommon = () => !!(commonEl() && commonEl().checked);
+  const deptSel = () => $('#t_dept');
+  const isCommon = () => deptSel().value === ALL;
+  const curSym = () => ($('#t_cur').value === 'INR' ? '₹' : '$');
   const recalcSplit = () => {
     let total = 0;
     $$('.tdc-input', body).forEach((i) => { total += Number(i.value) || 0; });
-    const cur = $('#t_cur').value === 'INR' ? '₹' : '$';
-    $('#t_deptTotal').textContent = cur + total.toLocaleString('en-US');
+    $('#t_deptTotal').textContent = curSym() + total.toLocaleString('en-US');
   };
-  // A common tool has no single department and no single cost — its cost is split
-  // per department instead.
+  // Keep the monthly total visible even for a single-department tool (#16 — the total
+  // must not vanish when a tool has a quantity or is switched around).
+  const recalcUnitTotal = () => {
+    const unit = Number($('#t_cost').value) || 0;
+    const q = Math.max(1, Number($('#t_qty').value) || 1);
+    const box = $('#t_costTotal');
+    if (box) box.textContent = q > 1
+      ? `Monthly total: ${curSym()}${(unit * q).toLocaleString('en-US')}  (${q} × ${curSym()}${unit.toLocaleString('en-US')})`
+      : '';
+  };
   const syncCommon = () => {
     const on = isCommon();
-    $('#t_deptWrap').style.display = on ? 'none' : '';
-    $('#t_costWrap').style.display = on ? 'none' : '';
+    $('#t_costRow').style.display = on ? 'none' : '';
+    $('#t_costTotal').style.display = on ? 'none' : '';
     $('#t_deptCostsWrap').style.display = on ? '' : 'none';
-    if (on) recalcSplit();
+    if (on) recalcSplit(); else recalcUnitTotal();
   };
 
-  openModal(id ? 'Edit tool' : 'New tool', body, async () => {
+  openModal(id ? 'Edit tool' : (copyFrom ? 'Duplicate tool' : 'New tool'), body, async () => {
     const name = $('#t_name').value.trim();
     if (!name) { toast('Tool name required'); return false; }
     const common = isCommon();
@@ -1578,10 +1759,12 @@ function editTool(id) {
       const deptCosts = {};
       $$('.tdc-input', body).forEach((i) => { const v = Number(i.value) || 0; if (v > 0) deptCosts[i.dataset.dept] = v; });
       payload.deptCosts = deptCosts;
-      payload.department = 'All departments';
+      payload.department = ALL;
+      payload.quantity = 1;
     } else {
       payload.cost = Number($('#t_cost').value) || 0;
-      payload.department = $('#t_dept').value;
+      payload.department = deptSel().value;
+      payload.quantity = Math.max(1, Number($('#t_qty').value) || 1);
     }
     if (id) await api('/tools/' + id, { method: 'PUT', body: JSON.stringify(payload) });
     else await api('/tools', { method: 'POST', body: JSON.stringify(payload) });
@@ -1590,9 +1773,11 @@ function editTool(id) {
     toast('Saved');
     return true;
   });
-  if (commonEl()) commonEl().onchange = syncCommon;
+  deptSel().onchange = syncCommon;
   $$('.tdc-input', body).forEach((i) => (i.oninput = recalcSplit));
-  $('#t_cur').addEventListener('change', recalcSplit);
+  const costInp = $('#t_cost'); if (costInp) costInp.oninput = recalcUnitTotal;
+  const qtyInp = $('#t_qty'); if (qtyInp) qtyInp.oninput = recalcUnitTotal;
+  $('#t_cur').addEventListener('change', () => { recalcSplit(); recalcUnitTotal(); });
   syncCommon();
 }
 
@@ -1607,18 +1792,27 @@ async function deleteTool(id) {
 
 // ================= CLIENTS =================
 function renderAccounts() {
+  // #7 — wire the client search box once; re-render on input.
+  const searchEl = $('#accountSearch');
+  if (searchEl && !searchEl._wired) { searchEl._wired = true; searchEl.oninput = () => { state.accountQuery = searchEl.value; renderAccounts(); }; }
   if (isSuper()) renderAccountsSuper();
   else renderAccountsDept();
+}
+// Earliest createdAt among a client's department-accounts, as YYYY-MM-DD (or '—').
+function clientAddedDate(accs) {
+  const dates = (accs || []).map((a) => a.createdAt).filter(Boolean).sort();
+  return dates.length ? String(dates[0]).slice(0, 10) : '—';
 }
 
 // Super: one row per client NAME with a checkbox per department, plus rename/delete.
 function renderAccountsSuper() {
   const wings = state.boot.wings || [];
   const groups = clientGroups();
-  const names = [...groups.keys()].sort((a, b) => a.localeCompare(b));
-  const head = ['Client', 'Departments', ''];
-  let html = '<thead><tr>' + head.map((h, i) => `<th class="${i < 2 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
-  if (!names.length) html += `<tr><td colspan="3" class="l muted">No clients yet. Use “+ New client”.</td></tr>`;
+  const q = (state.accountQuery || '').trim().toLowerCase();
+  const names = [...groups.keys()].filter((n) => !q || n.toLowerCase().includes(q)).sort((a, b) => a.localeCompare(b));
+  const head = ['Client', 'Added', 'Departments', ''];
+  let html = '<thead><tr>' + head.map((h, i) => `<th class="${i < 3 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
+  if (!names.length) html += `<tr><td colspan="4" class="l muted">${groups.size ? 'No clients match the search.' : 'No clients yet. Use “+ New client”.'}</td></tr>`;
   names.forEach((name) => {
     const accs = groups.get(name) || [];
     const has = (w) => accs.some((a) => (a.wing || '') === w);
@@ -1630,6 +1824,7 @@ function renderAccountsSuper() {
     const allBtn = `<button class="btn btn-sm dept-all" data-name="${esc(name)}" data-on="${allOn ? '1' : '0'}" title="${allOn ? 'Remove this client from every department' : 'Add this client to every department'}">${allOn ? '✕ None' : '✓ All'}</button>`;
     html += `<tr>
       <td class="l"><b>${esc(name)}</b></td>
+      <td class="l muted small">${clientAddedDate(accs)}</td>
       <td class="l"><div class="dept-boxes">${allBtn}${unassigned}${boxes}</div></td>
       <td class="client-actions">
         <button class="btn btn-sm rename-client" data-name="${esc(name)}">Rename</button>
@@ -1662,14 +1857,15 @@ function renderAccountsSuper() {
 function renderAccountsDept() {
   const ro = !!state.roleInfo.readOnly;
   const groups = clientGroups();
-  const names = [...groups.keys()].sort((a, b) => a.localeCompare(b));
-  const head = ['Client', 'Department'];
+  const q = (state.accountQuery || '').trim().toLowerCase();
+  const names = [...groups.keys()].filter((n) => !q || n.toLowerCase().includes(q)).sort((a, b) => a.localeCompare(b));
+  const head = ['Client', 'Department', 'Added'];
   let html = '<thead><tr>' + head.map((h) => `<th class="l">${h}</th>`).join('') + '</tr></thead><tbody>';
-  if (!names.length) html += `<tr><td colspan="2" class="l muted">No clients in your department yet.${ro ? '' : ' Use “+ New client”.'}</td></tr>`;
+  if (!names.length) html += `<tr><td colspan="3" class="l muted">${groups.size ? 'No clients match the search.' : `No clients in your department yet.${ro ? '' : ' Use “+ New client”.'}`}</td></tr>`;
   names.forEach((name) => {
     const accs = groups.get(name) || [];
     const depts = accs.map((a) => esc(a.wing || 'Unassigned')).join(', ');
-    html += `<tr><td class="l">${esc(name)}</td><td class="l">${depts}</td></tr>`;
+    html += `<tr><td class="l">${esc(name)}</td><td class="l">${depts}</td><td class="l muted small">${clientAddedDate(accs)}</td></tr>`;
   });
   $('#accountsTable').innerHTML = html + '</tbody>';
   $('#addAccountBtn').classList.toggle('hidden', ro || !state.roleInfo.canCreateAccounts);
@@ -1885,7 +2081,7 @@ async function renderSettings() {
   const tb = $('#toolBudgetForm');
   if (tb) {
     const budgets = s.toolBudgets || {};
-    const depts = [...new Set([...(s.wings || []), 'General', 'All departments', ...Object.keys(budgets)])];
+    const depts = [...new Set([...(s.wings || []), 'All departments', ...Object.keys(budgets)])];
     const key = (d) => 'tb_' + d.replace(/[^a-z0-9]/gi, '_');
     tb.innerHTML = depts.map((d) => `<label>${esc(d)}<input id="${key(d)}" type="number" min="0" value="${Number(budgets[d]) || 0}" /></label>`).join('');
     $('#saveToolBudgets').onclick = async () => {

@@ -734,3 +734,27 @@ table.data tbody tr.row-total td:first-child { z-index: 5; }
 .modal-card > h3 { flex: 0 0 auto; }
 #modalBody { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
 .modal-actions:not(.hidden) { flex: 0 0 auto; margin-top: 14px; }
+
+/* ============================================================
+   Phase 2 (user, 2026-09-14): tool right-click menu + quantity,
+   resources by-department grouping.
+   ============================================================ */
+
+/* Right-click context menu (Tools "make a copy") */
+.ctx-menu {
+  position: fixed; z-index: 1000; min-width: 168px; padding: 6px;
+  background: var(--glass-solid); border: 1px solid var(--line-strong);
+  border-radius: 12px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 2px;
+}
+.ctx-item {
+  text-align: left; border: none; background: transparent; color: var(--text);
+  padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; white-space: nowrap;
+}
+.ctx-item:hover { background: color-mix(in srgb, var(--brand) 14%, transparent); }
+.ctx-item.danger { color: var(--red); }
+.ctx-item.danger:hover { background: color-mix(in srgb, var(--red) 14%, transparent); }
+tr.tool-row { cursor: context-menu; }
+
+/* Resources → By department grouping */
+table.data tbody tr.dept-head td { background: var(--glass-2); border-top: 1px solid var(--line-strong); }
+table.data tbody tr.dept-head td.sticky-col { background: var(--glass-2); }

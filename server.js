@@ -259,6 +259,7 @@ app.post('/api/accounts', auth, requirePerm('canCreateAccounts'), (req, res) => 
     name: nm,
     wing: finalWing,
     budgetGM: budgetGM != null ? Number(budgetGM) : settings().assumptions.gmHealthy,
+    createdAt: new Date().toISOString(), // #14 — record when the client was added
   };
   store.accounts.push(acc);
   db.save().then(() => res.json(acc));
@@ -319,7 +320,7 @@ app.post('/api/accounts/assign-all-departments', auth, requirePerm('canManageCli
     for (const w of missing) {
       const empty = empties.shift();
       if (empty) empty.wing = w;
-      else store.accounts.push({ id: db.nextId('accounts'), name, wing: w, budgetGM: gmHealthy });
+      else store.accounts.push({ id: db.nextId('accounts'), name, wing: w, budgetGM: gmHealthy, createdAt: new Date().toISOString() });
       added++;
     }
   }
@@ -354,7 +355,16 @@ function cleanDeptCosts(v) {
   return out;
 }
 function cleanTool(b, base = {}) {
-  const common = b.common != null ? !!b.common : base.common !== undefined ? !!base.common : false;
+  // #16 (user, 2026-09-14): a tool assigned to "All departments" IS the common
+  // (shared) tool — its cost is split per department. So common is driven by the
+  // department pick as well as the explicit flag.
+  const deptPick = b.department != null ? String(b.department) : base.department;
+  const common = b.common != null ? !!b.common
+    : deptPick === 'All departments' ? true
+    : base.common !== undefined ? !!base.common : false;
+  // #15 — quantity (e.g. 3 Claude Pro seats). Non-common monthly cost = cost × qty.
+  const quantity = Math.max(1, Math.round(compute.num(
+    b.quantity != null ? b.quantity : (base.quantity != null ? base.quantity : 1)) || 1));
   // A common tool is shared by every department; its department label is fixed and
   // its cost is budgeted per department via `deptCosts` (user, 2026-08-21). The
   // total monthly `cost` for a common tool is the sum of its per-department split.
@@ -378,6 +388,7 @@ function cleanTool(b, base = {}) {
     cost,
     currency: b.currency === 'INR' ? 'INR' : b.currency === 'USD' ? 'USD' : base.currency || 'USD',
     common,
+    quantity,
     department,
     deptCosts,
     why: b.why != null ? String(b.why) : base.why || '',
@@ -783,9 +794,23 @@ app.get('/api/dashboard', auth, (req, res) => {
   const rateOfCat = (cat) => cat === 'Senior' ? catRates.sr : cat === 'Junior' ? catRates.jr : catRates.mid;
   const resByClient = {};
   const resByPerson = {};
+  // #9 (user, 2026-09-14): resources broken down BY DEPARTMENT — each department with
+  // the people who booked hours in it (plan vs actual), so a report can be segregated
+  // department-wise. Keyed by department (account wing) then by person.
+  const resByDept = {};
   const bumpPerson = (id, key, hrs) => {
     const a = assocByIdD[id];
     const p = resByPerson[id] || (resByPerson[id] = {
+      id, name: a ? (a.fullName || a.name) : ('#' + id), email: a ? a.name : '', category: a ? categoryOf(a) : '', planHours: 0, actualHours: 0,
+    });
+    p[key] += hrs;
+  };
+  const bumpDeptPerson = (dept, id, key, hrs) => {
+    if (!dept) return;
+    const d = resByDept[dept] || (resByDept[dept] = { dept, planHours: 0, actualHours: 0, people: {} });
+    d[key] += hrs;
+    const a = assocByIdD[id];
+    const p = d.people[id] || (d.people[id] = {
       id, name: a ? (a.fullName || a.name) : ('#' + id), email: a ? a.name : '', category: a ? categoryOf(a) : '', planHours: 0, actualHours: 0,
     });
     p[key] += hrs;
@@ -794,6 +819,7 @@ app.get('/api/dashboard', auth, (req, res) => {
     if (!visIds.has(e.accountId)) continue;
     const acc = accById[e.accountId];
     const cname = (acc && acc.name) || '—';
+    const dept = (acc && acc.wing) || '';
     const bag = resByClient[cname] || (resByClient[cname] = {
       name: cname, planHours: 0, actualHours: 0, planCost: 0, actualCost: 0,
     });
@@ -801,11 +827,13 @@ app.get('/api/dashboard', auth, (req, res) => {
       const a = assocByIdD[x.id]; const h = compute.num(x.hours);
       bag.planHours += h; bag.planCost += h * rateOfCat(a ? categoryOf(a) : 'Middle');
       bumpPerson(Number(x.id), 'planHours', h);
+      bumpDeptPerson(dept, Number(x.id), 'planHours', h);
     }
     for (const x of (e.resourcesActual || [])) {
       const a = assocByIdD[x.id]; const h = compute.num(x.hours);
       bag.actualHours += h; bag.actualCost += h * rateOfCat(a ? categoryOf(a) : 'Middle');
       bumpPerson(Number(x.id), 'actualHours', h);
+      bumpDeptPerson(dept, Number(x.id), 'actualHours', h);
     }
   }
   const resourceByClient = Object.values(resByClient)
@@ -826,9 +854,25 @@ app.get('/api/dashboard', auth, (req, res) => {
     }))
     .sort((a, b) => b.actualHours - a.actualHours);
 
+  // #9 — flatten the by-department map: each department with its people, both sorted
+  // by actual hours, only departments/people that actually booked time.
+  const resourceByDept = Object.values(resByDept)
+    .map((d) => ({
+      dept: d.dept,
+      planHours: d.planHours,
+      actualHours: d.actualHours,
+      hoursVariance: d.actualHours - d.planHours,
+      people: Object.values(d.people)
+        .filter((p) => p.planHours || p.actualHours)
+        .map((p) => ({ ...p, hoursVariance: p.actualHours - p.planHours }))
+        .sort((a, b) => b.actualHours - a.actualHours),
+    }))
+    .filter((d) => d.planHours || d.actualHours)
+    .sort((a, b) => b.actualHours - a.actualHours);
+
   res.json({
     mode, months: s.months, ytd, monthly, wingSummary, ranking,
-    comparison, comparisonByClient, comparisonYtd, resourceByClient, resourceByPerson,
+    comparison, comparisonByClient, comparisonYtd, resourceByClient, resourceByPerson, resourceByDept,
   });
 });
 
