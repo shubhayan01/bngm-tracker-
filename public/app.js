@@ -60,7 +60,10 @@ async function api(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
   if (state.token) headers.Authorization = 'Bearer ' + state.token;
   const res = await fetch('/api' + path, { ...opts, headers });
-  if (res.status === 401) { logout(); throw new Error('Session expired'); }
+  // A 401 only means an EXPIRED session when we were actually logged in (had a token).
+  // A 401 during login (no token yet) is just a bad password — let the server's real
+  // message ("Wrong role or password") through instead of "Session expired".
+  if (res.status === 401 && state.token) { logout(); throw new Error('Session expired'); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'Request failed');
   return data;
