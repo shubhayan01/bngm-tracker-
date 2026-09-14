@@ -63,6 +63,36 @@ function toast(msg) {
   clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.add('hidden'), 2600);
 }
 
+// ---------------- password show/hide (👁) ----------------
+// One delegated handler for every 👁 button. A button either names its input via
+// data-target, or sits next to its input inside a .pw-wrap.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.pw-eye');
+  if (!btn) return;
+  e.preventDefault();
+  const inp = btn.dataset.target ? document.getElementById(btn.dataset.target)
+    : btn.closest('.pw-wrap') && btn.closest('.pw-wrap').querySelector('input');
+  if (!inp) return;
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  btn.classList.toggle('on', show);
+  btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+});
+// Wrap any password inputs rendered without an eye (Settings, help bot) so they get one.
+function addPasswordEyes(root) {
+  $$('input[type=password]', root || document).forEach((inp) => {
+    if (inp.closest('.pw-wrap')) return;
+    const wrap = el('span', 'pw-wrap');
+    inp.parentNode.insertBefore(wrap, inp);
+    wrap.appendChild(inp);
+    const btn = el('button', 'pw-eye', '👁');
+    btn.type = 'button';
+    btn.title = 'Show / hide password';
+    btn.setAttribute('aria-label', 'Show password');
+    wrap.appendChild(btn);
+  });
+}
+
 // ---------------- theme ----------------
 function setTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
@@ -116,6 +146,7 @@ async function doLogin() {
 
 function logout() {
   state.token = null; localStorage.removeItem('bngm_token');
+  document.documentElement.removeAttribute('data-booting');
   $('#app').classList.add('hidden'); $('#login').classList.remove('hidden');
   $('#loginPassword').value = '';
   const fab = $('#helpFab'); if (fab) fab.classList.add('hidden');
@@ -126,6 +157,7 @@ $('#logoutBtn').addEventListener('click', logout);
 async function startApp() {
   state.boot = await api('/bootstrap');
   state.roleInfo = state.boot.roleInfo;
+  document.documentElement.removeAttribute('data-booting');
   $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
   $('#roleBadge').textContent = state.roleInfo.label;
   $('#fyBadge').textContent = state.boot.assumptions.fy || '';
@@ -833,10 +865,10 @@ function manageTeam() {
 
 // ================= DASHBOARD / REPORTS =================
 $('#dashRefresh').addEventListener('click', loadDashboard);
-$('#dashMode').addEventListener('change', loadDashboard);
+{ const dm = $('#dashMode'); if (dm) dm.addEventListener('change', loadDashboard); }
 
 async function loadDashboard() {
-  const mode = $('#dashMode').value;
+  const mode = ($('#dashMode') && $('#dashMode').value) || 'auto';
   const d = await api('/dashboard?mode=' + mode);
   state.dash = d;
   renderKpis(d.ytd);                       // YTD portfolio KPIs up top
@@ -1187,7 +1219,7 @@ function renderMonthly(rows) {
 }
 
 function renderWings(rows) {
-  const head = ['Service / Dept', 'Revenue', 'Total Cost', 'Gross Profit', 'GM %', 'Status'];
+  const head = ['Department', 'Revenue', 'Total Cost', 'Gross Profit', 'GM %', 'Status'];
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
   const t = { revenue: 0, totalCost: 0, grossProfit: 0 };
   rows.forEach((r) => {
@@ -1223,7 +1255,7 @@ function renderRanking() {
   const rows = (state.rankRows || []).filter((r) =>
     (!wing || r.wing === wing) && (!q || String(r.name || '').toLowerCase().includes(q)));
 
-  const head = ['#', 'Account', 'Service', 'Revenue', 'Total Cost', 'Gross Profit', 'GM %', 'Target', 'Variance', 'Status'];
+  const head = ['#', 'Account', 'Department', 'Revenue', 'Total Cost', 'Gross Profit', 'GM %', 'Target', 'Variance', 'Status'];
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 1 || i === 2 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
   if (!rows.length) html += `<tr><td colspan="10" class="l muted">${(state.rankRows || []).length ? 'No accounts match the filter.' : 'No entries yet — use the Update tab.'}</td></tr>`;
   const t = { revenue: 0, totalCost: 0, grossProfit: 0 };
@@ -1822,6 +1854,7 @@ async function renderSettings() {
     fld('a_midRate', 'Middle rate (₹/hr)', midRate) +
     fld('a_jrRate', 'Junior rate (₹/hr)', a.jrRate) +
     fld('a_srCap', 'Sr capacity (hrs/mo)', a.srCapacity) +
+    fld('a_midCap', 'Middle capacity (hrs/mo)', a.midCapacity != null ? a.midCapacity : a.jrCapacity) +
     fld('a_jrCap', 'Jr capacity (hrs/mo)', a.jrCapacity) +
     fld('a_resCap', 'Hours per resource / month', a.resourceMonthlyHours || 180) +
     fld('a_min', 'GM min % (At Risk below)', Math.round(a.gmMin * 100)) +
@@ -1829,7 +1862,7 @@ async function renderSettings() {
   $('#saveAssumptions').onclick = async () => {
     await api('/settings/assumptions', { method: 'PUT', body: JSON.stringify({
       srRate: +$('#a_srRate').value, midRate: +$('#a_midRate').value, jrRate: +$('#a_jrRate').value,
-      srCapacity: +$('#a_srCap').value, jrCapacity: +$('#a_jrCap').value,
+      srCapacity: +$('#a_srCap').value, midCapacity: +$('#a_midCap').value, jrCapacity: +$('#a_jrCap').value,
       resourceMonthlyHours: +$('#a_resCap').value || 180,
       gmMin: (+$('#a_min').value) / 100, gmHealthy: (+$('#a_healthy').value) / 100,
     }) });
@@ -1911,9 +1944,15 @@ async function renderSettings() {
   $$('#passwordForm button').forEach((b) => (b.onclick = async () => {
     const role = b.dataset.role; const v = $('#pw_' + role).value;
     if (!v || v.length < 4) { toast('Min 4 characters'); return; }
-    await api('/settings/password', { method: 'PUT', body: JSON.stringify({ role, newPassword: v }) });
-    $('#pw_' + role).value = ''; toast(state.boot.roles[role] + ' password updated');
+    try {
+      await api('/settings/password', { method: 'PUT', body: JSON.stringify({ role, newPassword: v }) });
+      $('#pw_' + role).value = ''; toast((state.boot.roles[role] || role) + ' password updated');
+    } catch (e) { toast('Could not update password: ' + e.message); }
   }));
+
+  // 👁 show/hide on the freshly rendered Settings password fields (role passwords,
+  // help-bot key).
+  addPasswordEyes($('#view-settings'));
 
   // Backup — fetch the full store as a file and save it. Can't use api() (that
   // parses JSON); we need the raw body as a downloadable blob with the auth header.

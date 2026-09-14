@@ -920,7 +920,7 @@ app.get('/api/settings', auth, requirePerm('canEditSettings'), (req, res) => {
 app.put('/api/settings/assumptions', auth, requirePerm('canEditSettings'), (req, res) => {
   const s = settings();
   const b = req.body || {};
-  for (const k of ['srRate', 'midRate', 'jrRate', 'srCapacity', 'jrCapacity', 'resourceMonthlyHours', 'gmMin', 'gmHealthy']) {
+  for (const k of ['srRate', 'midRate', 'jrRate', 'srCapacity', 'midCapacity', 'jrCapacity', 'resourceMonthlyHours', 'gmMin', 'gmHealthy']) {
     if (b[k] != null) s.assumptions[k] = compute.num(b[k]);
   }
   if (b.fy != null) s.assumptions.fy = String(b.fy);

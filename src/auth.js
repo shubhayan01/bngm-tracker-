@@ -15,8 +15,10 @@ const ROLES = {
   // only add them) and assign a client to departments (user, 2026-08-21).
   super: { label: 'Super Admin', wings: '*', canCreateAccounts: true, canManageUsers: true, canEditSettings: true, canManageTools: true, canManageClients: true },
 
-  // B. Admin — reports of all departments except Content. Read-only.
-  admin: { label: 'Admin', wings: '*', except: ['Content Creation'], readOnly: true, canCreateAccounts: false, canManageUsers: false, canEditSettings: false, canManageTools: false, canManageClients: false },
+  // B. Digital Marketing (was "Admin") — reports of all departments except Content.
+  // Read-only for now; Phase 3 (user, 2026-09-14) makes it full read/write + adds the
+  // department switcher.
+  admin: { label: 'Digital Marketing', wings: '*', except: ['Content Creation'], readOnly: true, canCreateAccounts: false, canManageUsers: false, canEditSettings: false, canManageTools: false, canManageClients: false },
 
   // Business Development — kept as a scoped department-style role. It has no delivery
   // wing of its own, so this starts empty; add wing names to grant visibility.

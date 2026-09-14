@@ -10,6 +10,9 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <!-- Suppress the login card's flash while an existing session boots (e.g. when a
+       drill-down detail tab opens with a saved token). Cleared by startApp/logout. -->
+  <script>try { if (localStorage.getItem('bngm_token')) document.documentElement.setAttribute('data-booting', '1'); } catch (e) {}</script>
   <div class="bg-orbs" aria-hidden="true"><span></span><span></span><span></span></div>
 
   <!-- LOGIN -->
@@ -25,11 +28,9 @@
       </div>
       <label class="field">
         <span>Access level</span>
-
-
         <select id="loginRole">
           <option value="super">Super Admin — full access</option>
-          <option value="admin">Admin — all dept reports (except Content)</option>
+          <option value="admin">Digital Marketing — all department reports</option>
           <option value="bizdev">Business Development</option>
           <option value="seo">SEO</option>
           <option value="content">Content</option>
@@ -38,9 +39,12 @@
           <option value="perfmkt">Performance Marketing</option>
         </select>
       </label>
-      <label class="field"> 
+      <label class="field">
         <span>Password</span>
-        <input id="loginPassword" type="password" placeholder="Enter password" autocomplete="current-password" />
+        <span class="pw-wrap">
+          <input id="loginPassword" type="password" placeholder="Enter password" autocomplete="current-password" />
+          <button type="button" class="pw-eye" data-target="loginPassword" aria-label="Show password" title="Show / hide password">👁</button>
+        </span>
       </label>
       <button id="loginBtn" class="btn btn-primary btn-block">Sign in</button>
       <p id="loginError" class="error"></p>
@@ -80,7 +84,7 @@
               <label class="eh-field"><span>Client</span>
                 <select id="e_client"></select>
               </label>
-              <label class="eh-field"><span>Service / Dept</span>
+              <label class="eh-field"><span>Department</span>
                 <select id="e_service"></select>
               </label>
               <label class="eh-field"><span>Year</span>
@@ -121,13 +125,6 @@
         <div class="view-head">
           <h2>Reports</h2>
           <div class="controls">
-            <label>View
-              <select id="dashMode">
-                <option value="auto">Actual (fallback to plan)</option>
-                <option value="actual">Actual only</option>
-                <option value="planned">Budget / Plan</option>
-              </select>
-            </label>
             <button id="dashRefresh" class="btn btn-ghost">Refresh</button>
           </div>
         </div>
@@ -139,7 +136,7 @@
           <button class="rf-pill" data-report="customer">🏢 By Customer</button>
           <button class="rf-pill" data-report="resources">👥 Resources</button>
           <button class="rf-pill" data-report="tools">🧰 Tools</button>
-          <button class="rf-pill" data-report="ranking">🏆 Wings &amp; Ranking</button>
+          <button class="rf-pill" data-report="ranking">🏆 Departments &amp; Ranking</button>
         </nav>
 
         <!-- Overview -->
@@ -202,9 +199,9 @@
           <div class="table-scroll glass"><table id="toolReportTable" class="data"></table></div>
         </div>
 
-        <!-- Wings & Ranking -->
+        <!-- Departments & Ranking -->
         <div class="report-block" data-report="ranking" hidden>
-          <h3>Wing / department summary (YTD)</h3>
+          <h3>Department summary (YTD)</h3>
           <div class="table-scroll glass"><table id="wingTable" class="data"></table></div>
 
           <div class="view-head" style="margin-top:22px">
