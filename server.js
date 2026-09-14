@@ -1434,3 +1434,5 @@ db.init()
     console.error(`  ${err.code || ''} ${err.message}\n`);
     process.exit(1);
   });
+
+// persistence check redeploy — 2026-09-14T12:12:22Z
