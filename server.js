@@ -806,15 +806,31 @@ app.get('/api/dashboard', auth, (req, res) => {
   };
   const planRows = rowsFor('planned');
   const actualRows = rowsFor('actual');
+  // #17/#3 (user, 2026-09-14) — planned & delivered word count (Content) summed per
+  // month and per client so the report tables can show it, not just the detail view.
+  const wcByMonth = {};
+  const wcByClient = {};
+  for (const e of store.entries) {
+    if (!visIds.has(e.accountId)) continue;
+    const wp = compute.num(e.wcPlanned), wd = compute.num(e.wcDelivered);
+    if (!wp && !wd) continue;
+    (wcByMonth[e.month] = wcByMonth[e.month] || { planWc: 0, actualWc: 0 });
+    wcByMonth[e.month].planWc += wp; wcByMonth[e.month].actualWc += wd;
+    const nm = (accById[e.accountId] && accById[e.accountId].name) || '—';
+    (wcByClient[nm] = wcByClient[nm] || { planWc: 0, actualWc: 0 });
+    wcByClient[nm].planWc += wp; wcByClient[nm].actualWc += wd;
+  }
   const comparison = s.months.map((m) => {
     const p = aggregate(planRows.filter((r) => r.e.month === m), s.assumptions);
     const a = aggregate(actualRows.filter((r) => r.e.month === m), s.assumptions);
+    const wc = wcByMonth[m] || { planWc: 0, actualWc: 0 };
     return {
       month: m,
       planRevenue: p.revenue, actualRevenue: a.revenue,
       planCost: p.totalCost, actualCost: a.totalCost,
       planGP: p.grossProfit, actualGP: a.grossProfit,
       planGM: p.gm, actualGM: a.gm,
+      planWc: wc.planWc, actualWc: wc.actualWc,
       revVariance: a.revenue - p.revenue,
       gpVariance: a.grossProfit - p.grossProfit,
       gmVariance: a.gm - p.gm,
@@ -833,12 +849,14 @@ app.get('/api/dashboard', auth, (req, res) => {
     const a = aggregate(byNameAct[name] || [], s.assumptions);
     const wings = [...new Set((byNamePlan[name] || []).concat(byNameAct[name] || [])
       .map((r) => r.acc && r.acc.wing).filter(Boolean))];
+    const wc = wcByClient[name] || { planWc: 0, actualWc: 0 };
     return {
       name, wings,
       planRevenue: p.revenue, actualRevenue: a.revenue,
       planCost: p.totalCost, actualCost: a.totalCost,
       planGP: p.grossProfit, actualGP: a.grossProfit,
       planGM: p.gm, actualGM: a.gm,
+      planWc: wc.planWc, actualWc: wc.actualWc,
       revVariance: a.revenue - p.revenue,
       gpVariance: a.grossProfit - p.grossProfit,
       gmVariance: a.gm - p.gm,

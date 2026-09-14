@@ -357,18 +357,32 @@ function renderSaveFeed() {
   if (!wrap || !list) return;
   const items = state.saveFeed || [];
   wrap.classList.toggle('hidden', !items.length);
-  list.innerHTML = items.map((it) => `
-    <div class="sf-item">
+  list.innerHTML = items.map((it, i) => `
+    <div class="sf-item" data-idx="${i}" title="Open ${esc(it.name)} — ${esc(it.month)} to view or edit">
       <div class="sf-top"><span class="sf-name">${esc(it.name)}${it.wing ? ` <span class="muted small">· ${esc(it.wing)}</span>` : ''}</span><span class="sf-when">${esc(it.month)} · ${it.mode === 'planned' ? 'Plan' : 'Actual'}</span></div>
       <div class="sf-figs"><span>Plan rev <b>${inr(it.planRev)}</b></span><span>Actual rev <b>${inr(it.actualRev)}</b></span></div>
     </div>`).join('');
+  // Clicking a recent-update card jumps back to that client's entry (#2, user 2026-09-14).
+  $$('.sf-item', list).forEach((elm) => (elm.onclick = () => reopenSaved(items[Number(elm.dataset.idx)])));
+}
+
+// Re-open a recently-saved entry in the Update screen (client, department, month, mode).
+function reopenSaved(it) {
+  if (!it) return;
+  entry.clientName = it.name;
+  entry.accountId = it.accountId || null;
+  entry.pendingWing = it.accountId ? null : (it.wing || null);
+  entry.month = it.month;
+  entry.mode = it.mode || 'actual';
+  switchView('entry'); // startEntry rebuilds the header from entry.* and loads the entry
 }
 function logSaveFeed() {
   const acc = state.boot.accounts.find((a) => a.id === entry.accountId);
   state.saveFeed = state.saveFeed || [];
   state.saveFeed.unshift({
+    accountId: entry.accountId,
     name: entry.clientName || (acc && acc.name) || '—',
-    wing: acc ? acc.wing : '',
+    wing: acc ? acc.wing : (entry.pendingWing || ''),
     month: entry.month,
     mode: entry.mode,
     planRev: Number(entry.data.revPlanned) || 0,
@@ -1145,21 +1159,29 @@ function renderPlanActual() {
     k('Margin', tot.planGM, tot.actualGM, tot.gmVariance, true);
 
   // table — every month row, selected ones highlighted, plus a scope total row
-  const head = ['Month', 'Plan Rev', 'Actual Rev', 'Δ Rev', 'Plan Margin', 'Actual Margin', 'Δ Margin'];
+  const hasWc = rows.some((r) => (Number(r.planWc) || 0) || (Number(r.actualWc) || 0));
+  const wcHead = hasWc ? ['Plan WC', 'Act WC'] : [];
+  const head = ['Month', 'Plan Rev', 'Actual Rev', 'Δ Rev', 'Plan Margin', 'Actual Margin', 'Δ Margin'].concat(wcHead);
+  const wcCells = (r) => hasWc ? `<td>${(Number(r.planWc) || 0).toLocaleString('en-IN')}</td><td>${(Number(r.actualWc) || 0).toLocaleString('en-IN')}</td>` : '';
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
   const active = rows.filter((r) => r.planRevenue || r.actualRevenue);
-  if (!active.length) html += `<tr><td colspan="7" class="l muted">No entries yet.</td></tr>`;
+  if (!active.length) html += `<tr><td colspan="${head.length}" class="l muted">No entries yet.</td></tr>`;
+  const wcTot = { planWc: 0, actualWc: 0 };
   active.forEach((r) => {
+    wcTot.planWc += Number(r.planWc) || 0; wcTot.actualWc += Number(r.actualWc) || 0;
     const on = sel.includes(r.month);
     html += `<tr ${rowLink('month', r.month, on ? 'row-sel' : '')}><td class="l">${r.month}</td>` +
       `<td>${inr(r.planRevenue)}</td><td>${inr(r.actualRevenue)}</td>${varCell(r.revVariance)}` +
-      `<td>${pct(r.planGM)}</td><td>${pct(r.actualGM)}</td>${varCell(r.gmVariance, true)}</tr>`;
+      `<td>${pct(r.planGM)}</td><td>${pct(r.actualGM)}</td>${varCell(r.gmVariance, true)}${wcCells(r)}</tr>`;
   });
   if (active.length) {
     const label = sel.length ? `Selected (${sel.length})` : 'Full year';
+    // total word count reflects the selected months (chosen rows)
+    const chosenWc = { planWc: 0, actualWc: 0 };
+    chosen.forEach((r) => { chosenWc.planWc += Number(r.planWc) || 0; chosenWc.actualWc += Number(r.actualWc) || 0; });
     html += `<tr class="row-total"><td class="l"><b>${label}</b></td>` +
       `<td>${inr(tot.planRevenue)}</td><td>${inr(tot.actualRevenue)}</td>${varCell(tot.revVariance)}` +
-      `<td>${pct(tot.planGM)}</td><td>${pct(tot.actualGM)}</td>${varCell(tot.gmVariance, true)}</tr>`;
+      `<td>${pct(tot.planGM)}</td><td>${pct(tot.actualGM)}</td>${varCell(tot.gmVariance, true)}${wcCells(chosenWc)}</tr>`;
   }
   $('#cmpTable').innerHTML = html + '</tbody>';
   wireRowLinks($('#cmpTable'));
@@ -1178,16 +1200,20 @@ function setupClientCompare(rows) {
 function renderClientCompare() {
   const q = (($('#clientCmpSearch') && $('#clientCmpSearch').value) || '').trim().toLowerCase();
   const rows = (state.clientCmp || []).filter((r) => !q || String(r.name || '').toLowerCase().includes(q));
-  const head = ['Client', 'Plan Rev', 'Actual Rev', 'Δ Rev', 'Plan Cost', 'Actual Cost', 'Plan Margin', 'Actual Margin', 'Δ Margin'];
+  // #17/#3 — show planned/actual word count when any client in scope has some (Content).
+  const hasWc = (state.clientCmp || []).some((r) => (Number(r.planWc) || 0) || (Number(r.actualWc) || 0));
+  const wcHead = hasWc ? ['Plan WC', 'Act WC'] : [];
+  const head = ['Client', 'Plan Rev', 'Actual Rev', 'Δ Rev', 'Plan Cost', 'Actual Cost', 'Plan Margin', 'Actual Margin', 'Δ Margin'].concat(wcHead);
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
-  if (!rows.length) html += `<tr><td colspan="9" class="l muted">${(state.clientCmp || []).length ? 'No clients match the filter.' : 'No entries yet.'}</td></tr>`;
-  const t = { planRevenue: 0, actualRevenue: 0, planCost: 0, actualCost: 0, planGP: 0, actualGP: 0 };
+  if (!rows.length) html += `<tr><td colspan="${head.length}" class="l muted">${(state.clientCmp || []).length ? 'No clients match the filter.' : 'No entries yet.'}</td></tr>`;
+  const wcCells = (r) => hasWc ? `<td>${(Number(r.planWc) || 0).toLocaleString('en-IN')}</td><td>${(Number(r.actualWc) || 0).toLocaleString('en-IN')}</td>` : '';
+  const t = { planRevenue: 0, actualRevenue: 0, planCost: 0, actualCost: 0, planGP: 0, actualGP: 0, planWc: 0, actualWc: 0 };
   rows.forEach((r) => {
     Object.keys(t).forEach((k) => (t[k] += Number(r[k]) || 0));
     html += `<tr ${rowLink('client', r.name)}><td class="l">${esc(r.name)}</td>` +
       `<td>${inr(r.planRevenue)}</td><td>${inr(r.actualRevenue)}</td>${varCell(r.revVariance)}` +
       `${costCell(r.planCost)}${costCell(r.actualCost)}` +
-      `<td>${pct(r.planGM)}</td><td>${pct(r.actualGM)}</td>${varCell(r.gmVariance, true)}</tr>`;
+      `<td>${pct(r.planGM)}</td><td>${pct(r.actualGM)}</td>${varCell(r.gmVariance, true)}${wcCells(r)}</tr>`;
   });
   if (rows.length) {
     const pGM = t.planRevenue ? t.planGP / t.planRevenue : 0;
@@ -1195,7 +1221,7 @@ function renderClientCompare() {
     html += `<tr class="row-total"><td class="l"><b>Total</b></td>` +
       `<td>${inr(t.planRevenue)}</td><td>${inr(t.actualRevenue)}</td>${varCell(t.actualRevenue - t.planRevenue)}` +
       `${costCell(t.planCost)}${costCell(t.actualCost)}` +
-      `<td>${pct(pGM)}</td><td>${pct(aGM)}</td>${varCell(aGM - pGM, true)}</tr>`;
+      `<td>${pct(pGM)}</td><td>${pct(aGM)}</td>${varCell(aGM - pGM, true)}${wcCells(t)}</tr>`;
   }
   $('#clientCmpTable').innerHTML = html + '</tbody>';
   wireRowLinks($('#clientCmpTable'));
@@ -2174,7 +2200,7 @@ async function renderSettings() {
     const models = ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile', 'openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'meta-llama/llama-4-scout-17b-16e-instruct'];
     if (cfg.model && !models.includes(cfg.model)) models.unshift(cfg.model);
     hb.innerHTML =
-      `<label>Groq API key ${cfg.hasKey ? `<span class="muted small">(a key is set${cfg.envKey ? ' via env' : ''})</span>` : ''}<input id="hb_key" type="password" autocomplete="off" placeholder="${cfg.hasKey ? '•••••• leave blank to keep' : 'gsk_…'}" /></label>` +
+      `<label>Groq API key ${cfg.hasKey ? `<span class="muted small">(a key is set${cfg.envKey ? ' via env' : ''})</span>` : ''}<span class="pw-wrap"><input id="hb_key" type="password" autocomplete="off" placeholder="${cfg.hasKey ? '•••••• leave blank to keep' : 'gsk_…'}" /><button type="button" class="pw-eye" data-target="hb_key" aria-label="Show key" title="Show / hide">👁</button></span></label>` +
       `<label>Model<select id="hb_model">${models.map((m) => `<option value="${esc(m)}" ${m === cfg.model ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></label>`;
     $('#saveHelpBot').onclick = async () => {
       const payload = { model: $('#hb_model').value };
@@ -2192,7 +2218,7 @@ async function renderSettings() {
 
   const pf = $('#passwordForm');
   pf.innerHTML = Object.entries(state.boot.roles).map(([role, label]) =>
-    `<div class="pw-row"><input type="password" id="pw_${role}" placeholder="New password for ${label}" />
+    `<div class="pw-row"><span class="pw-wrap"><input type="password" id="pw_${role}" placeholder="New password for ${label}" autocomplete="new-password" /><button type="button" class="pw-eye" data-target="pw_${role}" aria-label="Show password" title="Show / hide password">👁</button></span>
      <button class="btn btn-sm" data-role="${role}">Set</button></div>`).join('');
   $$('#passwordForm button').forEach((b) => (b.onclick = async () => {
     const role = b.dataset.role; const v = $('#pw_' + role).value;

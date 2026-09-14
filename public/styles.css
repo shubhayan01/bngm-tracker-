@@ -778,3 +778,7 @@ table.data tbody tr.dept-head td.sticky-col { background: var(--glass-2); }
   padding: 6px 2px 2px; border-top: 1px dashed var(--line); margin-top: 2px;
 }
 .team-row { align-items: start; }
+
+/* Recent-updates feed cards are clickable (jump back to that entry, #2) */
+.sf-item { cursor: pointer; transition: border-color .12s ease, background .12s ease; }
+.sf-item:hover { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 8%, var(--glass-2)); }
