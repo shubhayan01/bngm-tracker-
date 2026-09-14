@@ -758,3 +758,23 @@ tr.tool-row { cursor: context-menu; }
 /* Resources → By department grouping */
 table.data tbody tr.dept-head td { background: var(--glass-2); border-top: 1px solid var(--line-strong); }
 table.data tbody tr.dept-head td.sticky-col { background: var(--glass-2); }
+
+/* ============================================================
+   Phase 3 (user, 2026-09-14): department switcher + Manage-team
+   department checkboxes.
+   ============================================================ */
+
+/* Top-bar department switcher (Super / Digital Marketing) */
+.dept-switcher {
+  font-size: 12.5px; font-weight: 700; padding: 6px 10px; border-radius: 20px;
+  background: var(--glass-2); border: 1px solid var(--line); color: var(--text);
+  max-width: 200px; cursor: pointer;
+}
+.dept-switcher:focus { outline: none; border-color: var(--brand); }
+
+/* Manage-team: department checkboxes get their own full-width line under each row */
+.team-row .tm-depts, .team-add .tm-depts {
+  grid-column: 1 / -1;
+  padding: 6px 2px 2px; border-top: 1px dashed var(--line); margin-top: 2px;
+}
+.team-row { align-items: start; }

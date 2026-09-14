@@ -48,6 +48,14 @@ function initUsdToggle() {
   }
 }
 
+// #8 — when a switcher role (Super / Digital Marketing) has picked a department,
+// append it so bootstrap/dashboard/detail/tools are all scoped to that department.
+function withDept(path) {
+  if (!state.activeDept) return path;
+  const sep = path.includes('?') ? '&' : '?';
+  return path + sep + 'dept=' + encodeURIComponent(state.activeDept);
+}
+
 async function api(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
   if (state.token) headers.Authorization = 'Bearer ' + state.token;
@@ -155,7 +163,7 @@ function logout() {
 $('#logoutBtn').addEventListener('click', logout);
 
 async function startApp() {
-  state.boot = await api('/bootstrap');
+  state.boot = await api(withDept('/bootstrap'));
   state.roleInfo = state.boot.roleInfo;
   document.documentElement.removeAttribute('data-booting');
   $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
@@ -166,6 +174,7 @@ async function startApp() {
   updateHelpFab();
   $$('.settings-only').forEach((e) => e.classList.toggle('hidden', !state.roleInfo.canEditSettings));
   $('#addToolBtn').classList.toggle('hidden', !state.roleInfo.canManageTools);
+  buildDeptSwitcher();
 
   // Read-only roles (Admin) get reports only — hide the Update tab and any
   // create buttons, and land on the dashboard.
@@ -182,6 +191,36 @@ async function startApp() {
   startEntry();
 }
 
+// ---------------- department switcher (#8) ----------------
+// Super & Digital Marketing can pick a department to view AND edit everything as that
+// department. "All departments" (empty) restores the full cross-department view.
+function buildDeptSwitcher() {
+  const sel = $('#deptSwitcher');
+  if (!sel) return;
+  if (!state.roleInfo.canSwitchDept) { sel.classList.add('hidden'); return; }
+  const depts = state.boot.allDepartments || state.boot.wings || [];
+  sel.innerHTML = '<option value="">🏢 All departments</option>' +
+    depts.map((d) => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
+  sel.value = state.activeDept || '';
+  sel.classList.remove('hidden');
+  sel.onchange = () => onDeptSwitch(sel.value);
+}
+async function onDeptSwitch(dept) {
+  state.activeDept = dept || '';
+  try {
+    state.boot = await api(withDept('/bootstrap'));
+    state.roleInfo = state.boot.roleInfo;
+  } catch (e) { toast(e.message); return; }
+  // Re-render the view the user is on so the new scope takes effect immediately.
+  const v = state.view || 'entry';
+  if (v === 'entry') { switchView('entry'); }
+  else if (v === 'dashboard') loadDashboard();
+  else if (v === 'accounts') renderAccounts();
+  else if (v === 'tools') renderTools();
+  else switchView(v);
+  toast(dept ? `Now viewing: ${dept}` : 'Viewing all departments');
+}
+
 // ---------------- nav ----------------
 $('#tabs').addEventListener('click', (e) => {
   const btn = e.target.closest('.tab'); if (!btn) return;
@@ -191,6 +230,7 @@ const _detailBack = $('#detailBack');
 if (_detailBack) _detailBack.addEventListener('click', () => switchView('dashboard'));
 
 function switchView(view) {
+  state.view = view;
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === view));
   $$('.view').forEach((v) => v.classList.add('hidden'));
   $('#view-' + view).classList.remove('hidden');
@@ -277,14 +317,16 @@ function entryHint() {
 }
 
 function startEntry() {
-  const groups = clientGroups();
-  const names = [...groups.keys()].sort((a, b) => a.localeCompare(b));
+  // #10 — every client is pickable by every role (clients are open to all departments);
+  // the department is chosen below and the account is created on save if it doesn't exist.
+  const names = (state.boot.clientNames && state.boot.clientNames.length)
+    ? state.boot.clientNames.slice()
+    : [...clientGroups().keys()].sort((a, b) => a.localeCompare(b));
   const clientSel = $('#e_client');
-  // Client picker shows client NAMES only — no department (user, 2026-08-21).
   clientSel.innerHTML = '<option value="">— select client —</option>' +
     names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
-  if (entry.clientName && groups.has(entry.clientName)) clientSel.value = entry.clientName;
-  else { entry.clientName = null; entry.accountId = null; }
+  if (entry.clientName && names.includes(entry.clientName)) clientSel.value = entry.clientName;
+  else { entry.clientName = null; entry.accountId = null; entry.pendingWing = null; }
 
   fillServiceSelect();
   fillDateSelects();
@@ -341,52 +383,48 @@ function logSaveFeed() {
 //  • Super sees EVERY department: existing ones select their account, missing ones
 //    carry a "new:<wing>" sentinel that creates the account on selection.
 //  • Department roles see only the department(s) that client is in (their own).
-function fillServiceSelect() {
-  const sel = $('#e_service');
-  if (!entry.clientName) { sel.innerHTML = '<option value="">—</option>'; sel.disabled = true; entry.accountId = null; return; }
-  const accs = clientGroups().get(entry.clientName) || [];
-  const byWing = {};
-  accs.forEach((a) => { byWing[a.wing || ''] = a; });
-  sel.disabled = false;
-
-  // "Unassigned" (empty-wing) accounts are no longer offered here (user, 2026-08-24) —
-  // an entry is always logged against a real department. Super sees every department
-  // (existing ones select the account, missing ones carry a "new:<wing>" add sentinel).
-  const opts = [];
-  if (isSuper()) {
-    (state.boot.wings || []).forEach((w) => {
-      if (byWing[w]) opts.push(`<option value="${byWing[w].id}">${esc(w)}</option>`);
-      else opts.push(`<option value="new:${esc(w)}">${esc(w)}</option>`);
-    });
-  } else {
-    accs.filter((a) => a.wing).forEach((a) => opts.push(`<option value="${a.id}">${esc(a.wing)}</option>`));
-    if (!opts.length) opts.push('<option value="">—</option>');
-  }
-  sel.innerHTML = opts.join('');
-
-  // Only auto-select accounts that actually have a department row rendered above.
-  const pickable = isSuper() ? accs.filter((a) => a.wing) : accs.filter((a) => a.wing);
-  if (entry.accountId && pickable.some((a) => a.id === entry.accountId)) sel.value = String(entry.accountId);
-  else if (pickable.length) { entry.accountId = pickable[0].id; sel.value = String(pickable[0].id); }
-  else { entry.accountId = null; if (sel.options[0]) sel.value = sel.options[0].value; }
+// Departments this role may log an entry under: the active department if one is
+// picked, else every department a switcher role can reach, else the role's own wings.
+function serviceWingsForRole() {
+  if (state.activeDept) return [state.activeDept];
+  if (state.roleInfo.canSwitchDept) return state.boot.allDepartments || state.boot.wings || [];
+  return (state.roleInfo.wings || []).slice();
 }
 
-// Handle a service pick — including the Super-only "add this department" sentinel,
-// which creates the (client, department) account before loading the entry.
-async function onServiceChange() {
-  const v = $('#e_service').value;
-  if (v && v.startsWith('new:')) {
-    const wing = v.slice(4);
-    try {
-      const acc = await api('/accounts', { method: 'POST', body: JSON.stringify({ name: entry.clientName, wing }) });
-      state.boot = await api('/bootstrap'); // pick up the new account everywhere
-      entry.accountId = acc.id;
-      fillServiceSelect();
-      toast(`${entry.clientName} added to ${wing}`);
-    } catch (e) { toast(e.message); return; }
-  } else {
-    entry.accountId = Number(v) || null;
-  }
+function fillServiceSelect() {
+  const sel = $('#e_service');
+  if (!entry.clientName) { sel.innerHTML = '<option value="">—</option>'; sel.disabled = true; entry.accountId = null; entry.pendingWing = null; return; }
+  const accs = clientGroups().get(entry.clientName) || [];
+  const byWing = {};
+  accs.forEach((a) => { if (a.wing) byWing[a.wing] = a; });
+  sel.disabled = false;
+
+  // Offer every department this role may log under. An existing (client, department)
+  // account selects it; a missing one carries a "new:<wing>" sentinel and the account
+  // is created on save (#10 — clients are open to all departments).
+  const wings = serviceWingsForRole();
+  const opts = wings.length
+    ? wings.map((w) => byWing[w] ? `<option value="${byWing[w].id}">${esc(w)}</option>` : `<option value="new:${esc(w)}">${esc(w)}</option>`)
+    : ['<option value="">— no department assigned to your role —</option>'];
+  sel.innerHTML = opts.join('');
+
+  // Keep the current account if still valid; else select the first option and resolve it.
+  if (entry.accountId && accs.some((a) => a.id === entry.accountId)) sel.value = String(entry.accountId);
+  else if (sel.options[0]) sel.value = sel.options[0].value;
+  resolveServiceValue();
+}
+
+// Turn the current service <select> value into either an accountId (existing) or a
+// pendingWing (a department with no account yet — created on save).
+function resolveServiceValue() {
+  const v = $('#e_service').value || '';
+  if (v.startsWith('new:')) { entry.accountId = null; entry.pendingWing = v.slice(4); }
+  else if (v) { entry.accountId = Number(v) || null; entry.pendingWing = null; }
+  else { entry.accountId = null; entry.pendingWing = null; }
+}
+
+function onServiceChange() {
+  resolveServiceValue();
   afterHeadChange();
 }
 
@@ -412,7 +450,23 @@ function rebuildMonth() {
 
 function afterHeadChange() {
   if (entry.accountId && entry.month) loadEntry();
+  else if (entry.pendingWing && entry.clientName && entry.month) loadBlankEntry();
   else entryHint();
+}
+
+// A brand-new (client, department) combination with no account yet — show an empty
+// form; the account is created when the entry is first saved (#10).
+function loadBlankEntry() {
+  entry.data = {
+    accountId: null, month: entry.month,
+    revPlanned: 0, revActual: 0, srHrs: 0, midHrs: 0, jrHrs: 0, srHrsPlan: 0, midHrsPlan: 0, jrHrsPlan: 0,
+    resourcesActual: [], resourcesPlan: [], outsourcing: [], outsourcingPlan: [], outsourcingActual: [],
+    wcPlanned: 0, wcDelivered: 0, notes: '', notesPlan: '', notesActual: '',
+  };
+  entry.capacity = (state.boot.assumptions && state.boot.assumptions.resourceMonthlyHours) || 180;
+  entry.usageOther = {};
+  normalizeEntryData(entry.data);
+  renderEntryBody();
 }
 
 function setModeButtons() {
@@ -629,6 +683,7 @@ function wireResSearch() {
 
 function renderEntryBody() {
   const acc = state.boot.accounts.find((a) => a.id === entry.accountId);
+  const wing = acc ? acc.wing : entry.pendingWing; // pending (unsaved) entries have no acc yet
   const f = F();
   const canManageTeam = state.roleInfo.canEditSettings;
   const exists = !!entry.data.id;
@@ -676,9 +731,9 @@ function renderEntryBody() {
       </div>
     </div>
 
-    ${acc && acc.wing === 'Content Creation' ? `
+    ${wing === 'Content Creation' ? `
     <div class="entry-field">
-      <label class="ef-label">Word count ${entry.mode === 'planned' ? 'planned' : 'delivered'}</label>
+      <label class="ef-label">Word count — ${entry.mode === 'planned' ? 'planned' : 'delivered'}</label>
       <input id="e_wc" type="number" min="0" step="1" value="${entry.data[f.wc] || ''}" placeholder="e.g. 8000" />
     </div>` : ''}
 
@@ -761,6 +816,14 @@ async function saveEntry() {
   const msg = $('#e_saveMsg');
   msg.textContent = 'Saving…';
   try {
+    // #10 — first save of a new (client, department) combo creates the account.
+    if (!entry.accountId && entry.pendingWing && entry.clientName) {
+      const acc = await api('/accounts', { method: 'POST', body: JSON.stringify({ name: entry.clientName, wing: entry.pendingWing }) });
+      entry.accountId = acc.id;
+      entry.pendingWing = null;
+      state.boot = await api(withDept('/bootstrap')); // pick up the new client/account
+    }
+    if (!entry.accountId) { msg.textContent = ''; toast('Pick a client and department first'); return; }
     const f = F();
     // Mode-scoped payload: only touch the fields for the current Planned/Actual view.
     // Resource arrays are sent only when the user actually entered per-person hours,
@@ -833,6 +896,9 @@ function renderPreview(computed) {
 
 // ---- team / resource manager (add / adjust senior vs junior) ----
 function manageTeam() {
+  const deptList = state.boot.allDepartments || state.boot.wings || [];
+  const deptBoxes = (checked) => deptList.map((d) =>
+    `<label class="dept-box"><input type="checkbox" class="tm-dept" value="${esc(d)}" ${(checked || []).includes(d) ? 'checked' : ''}/> ${esc(d)}</label>`).join('');
   const render = () => {
     const catOpts = (sel) => CATEGORIES.map((c) => `<option value="${c}" ${c === sel ? 'selected' : ''}>${c}</option>`).join('');
     const list = (state.boot.associates || []).slice().sort((a, b) => assocLabel(a).localeCompare(assocLabel(b)));
@@ -843,22 +909,25 @@ function manageTeam() {
         <select class="tm-cat">${catOpts(categoryOf(p))}</select>
         <button class="btn btn-sm tm-save">Save</button>
         <button class="btn btn-sm btn-danger tm-del">✕</button>
+        ${deptList.length ? `<div class="tm-depts dept-boxes">${deptBoxes(p.departments)}</div>` : ''}
       </div>`).join('');
     const body = el('div');
     body.innerHTML = `
-      <p class="muted">The team is loaded from <code>emp details.txt</code>, with categories from <code>emp categories.txt</code>. Each resource has a <b>name</b> and an <b>email</b> (used to search &amp; identify them); its category (<b>Senior · Middle · Junior</b>) drives the ₹/hr rate used in costing.</p>
+      <p class="muted">Each resource has a <b>name</b> and an <b>email</b>; its category (<b>Senior · Middle · Junior</b>) drives the ₹/hr rate. Tick the <b>departments</b> each resource works in (#10).</p>
       <div id="teamList">${rows || '<p class="muted">No resources yet.</p>'}</div>
       <div class="team-add">
         <input id="tm_newFullName" type="text" placeholder="New person's name" />
         <input id="tm_newName" type="email" placeholder="email@domain" />
         <select id="tm_newCat">${catOpts('Middle')}</select>
         <button id="tm_add" class="btn btn-sm btn-primary">+ Add</button>
+        ${deptList.length ? `<div class="tm-depts dept-boxes" id="tm_newDepts">${deptBoxes([])}</div>` : ''}
       </div>`;
     openModalCustom('Manage team / resources', body);
     body.querySelectorAll('.team-row').forEach((rowEl) => {
       const id = Number(rowEl.dataset.id);
       rowEl.querySelector('.tm-save').onclick = async () => {
-        await api('/associates/' + id, { method: 'PUT', body: JSON.stringify({ name: rowEl.querySelector('.tm-name').value, fullName: rowEl.querySelector('.tm-fullname').value, category: rowEl.querySelector('.tm-cat').value }) });
+        const departments = [...rowEl.querySelectorAll('.tm-dept:checked')].map((c) => c.value);
+        await api('/associates/' + id, { method: 'PUT', body: JSON.stringify({ name: rowEl.querySelector('.tm-name').value, fullName: rowEl.querySelector('.tm-fullname').value, category: rowEl.querySelector('.tm-cat').value, departments }) });
         state.boot.associates = await api('/associates'); toast('Saved'); render();
       };
       rowEl.querySelector('.tm-del').onclick = async () => {
@@ -871,7 +940,8 @@ function manageTeam() {
       const name = body.querySelector('#tm_newName').value.trim();
       const fullName = body.querySelector('#tm_newFullName').value.trim();
       if (!name) { toast('Email required'); return; }
-      await api('/associates', { method: 'POST', body: JSON.stringify({ name, fullName, category: body.querySelector('#tm_newCat').value }) });
+      const departments = [...body.querySelectorAll('#tm_newDepts .tm-dept:checked')].map((c) => c.value);
+      await api('/associates', { method: 'POST', body: JSON.stringify({ name, fullName, category: body.querySelector('#tm_newCat').value, departments }) });
       state.boot.associates = await api('/associates'); toast('Added'); render();
     };
   };
@@ -943,7 +1013,7 @@ function downloadActiveReportCsv() {
 
 async function loadDashboard() {
   const mode = ($('#dashMode') && $('#dashMode').value) || 'auto';
-  const d = await api('/dashboard?mode=' + mode);
+  const d = await api(withDept('/dashboard?mode=' + mode));
   state.dash = d;
   renderKpis(d.ytd);                       // YTD portfolio KPIs up top
   renderMonthly(d.monthly);
@@ -973,7 +1043,8 @@ function wireReportFilter() {
 // The whole report row is clickable: clicking anywhere on it opens a full breakdown
 // for that month / client in a new browser tab (replaced the old per-cell 🔍 button).
 function openDetailTab(type, key) {
-  const url = `?view=detail&type=${encodeURIComponent(type)}&key=${encodeURIComponent(key)}`;
+  let url = `?view=detail&type=${encodeURIComponent(type)}&key=${encodeURIComponent(key)}`;
+  if (state.activeDept) url += `&dept=${encodeURIComponent(state.activeDept)}`;
   window.open(url, '_blank', 'noopener');
 }
 // Attributes that turn a <tr> into a clickable link to the drill-down detail tab.
@@ -1070,27 +1141,24 @@ function renderPlanActual() {
   const kpiEl = $('#cmpKpis');
   if (kpiEl) kpiEl.innerHTML =
     k('Revenue', tot.planRevenue, tot.actualRevenue, tot.revVariance, false) +
-    k('Gross profit', tot.planGP, tot.actualGP, tot.gpVariance, false) +
-    k('Gross margin', tot.planGM, tot.actualGM, tot.gmVariance, true) +
-    k('Cost', tot.planCost, tot.actualCost, tot.actualCost - tot.planCost, false);
+    k('Cost', tot.planCost, tot.actualCost, tot.actualCost - tot.planCost, false) +
+    k('Margin', tot.planGM, tot.actualGM, tot.gmVariance, true);
 
   // table — every month row, selected ones highlighted, plus a scope total row
-  const head = ['Month', 'Plan Rev', 'Actual Rev', 'Δ Rev', 'Plan GP', 'Actual GP', 'Δ GP', 'Plan GM', 'Actual GM', 'Δ GM'];
+  const head = ['Month', 'Plan Rev', 'Actual Rev', 'Δ Rev', 'Plan Margin', 'Actual Margin', 'Δ Margin'];
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
   const active = rows.filter((r) => r.planRevenue || r.actualRevenue);
-  if (!active.length) html += `<tr><td colspan="10" class="l muted">No entries yet.</td></tr>`;
+  if (!active.length) html += `<tr><td colspan="7" class="l muted">No entries yet.</td></tr>`;
   active.forEach((r) => {
     const on = sel.includes(r.month);
     html += `<tr ${rowLink('month', r.month, on ? 'row-sel' : '')}><td class="l">${r.month}</td>` +
       `<td>${inr(r.planRevenue)}</td><td>${inr(r.actualRevenue)}</td>${varCell(r.revVariance)}` +
-      `<td>${inr(r.planGP)}</td><td>${inr(r.actualGP)}</td>${varCell(r.gpVariance)}` +
       `<td>${pct(r.planGM)}</td><td>${pct(r.actualGM)}</td>${varCell(r.gmVariance, true)}</tr>`;
   });
   if (active.length) {
     const label = sel.length ? `Selected (${sel.length})` : 'Full year';
     html += `<tr class="row-total"><td class="l"><b>${label}</b></td>` +
       `<td>${inr(tot.planRevenue)}</td><td>${inr(tot.actualRevenue)}</td>${varCell(tot.revVariance)}` +
-      `<td>${inr(tot.planGP)}</td><td>${inr(tot.actualGP)}</td>${varCell(tot.gpVariance)}` +
       `<td>${pct(tot.planGM)}</td><td>${pct(tot.actualGM)}</td>${varCell(tot.gmVariance, true)}</tr>`;
   }
   $('#cmpTable').innerHTML = html + '</tbody>';
@@ -1110,16 +1178,15 @@ function setupClientCompare(rows) {
 function renderClientCompare() {
   const q = (($('#clientCmpSearch') && $('#clientCmpSearch').value) || '').trim().toLowerCase();
   const rows = (state.clientCmp || []).filter((r) => !q || String(r.name || '').toLowerCase().includes(q));
-  const head = ['Client', 'Plan Rev', 'Actual Rev', 'Δ Rev', 'Plan Cost', 'Actual Cost', 'Plan GP', 'Actual GP', 'Δ GP', 'Plan GM', 'Actual GM', 'Δ GM'];
+  const head = ['Client', 'Plan Rev', 'Actual Rev', 'Δ Rev', 'Plan Cost', 'Actual Cost', 'Plan Margin', 'Actual Margin', 'Δ Margin'];
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
-  if (!rows.length) html += `<tr><td colspan="12" class="l muted">${(state.clientCmp || []).length ? 'No clients match the filter.' : 'No entries yet.'}</td></tr>`;
+  if (!rows.length) html += `<tr><td colspan="9" class="l muted">${(state.clientCmp || []).length ? 'No clients match the filter.' : 'No entries yet.'}</td></tr>`;
   const t = { planRevenue: 0, actualRevenue: 0, planCost: 0, actualCost: 0, planGP: 0, actualGP: 0 };
   rows.forEach((r) => {
     Object.keys(t).forEach((k) => (t[k] += Number(r[k]) || 0));
     html += `<tr ${rowLink('client', r.name)}><td class="l">${esc(r.name)}</td>` +
       `<td>${inr(r.planRevenue)}</td><td>${inr(r.actualRevenue)}</td>${varCell(r.revVariance)}` +
       `${costCell(r.planCost)}${costCell(r.actualCost)}` +
-      `<td>${inr(r.planGP)}</td><td>${inr(r.actualGP)}</td>${varCell(r.gpVariance)}` +
       `<td>${pct(r.planGM)}</td><td>${pct(r.actualGM)}</td>${varCell(r.gmVariance, true)}</tr>`;
   });
   if (rows.length) {
@@ -1128,7 +1195,6 @@ function renderClientCompare() {
     html += `<tr class="row-total"><td class="l"><b>Total</b></td>` +
       `<td>${inr(t.planRevenue)}</td><td>${inr(t.actualRevenue)}</td>${varCell(t.actualRevenue - t.planRevenue)}` +
       `${costCell(t.planCost)}${costCell(t.actualCost)}` +
-      `<td>${inr(t.planGP)}</td><td>${inr(t.actualGP)}</td>${varCell(t.actualGP - t.planGP)}` +
       `<td>${pct(pGM)}</td><td>${pct(aGM)}</td>${varCell(aGM - pGM, true)}</tr>`;
   }
   $('#clientCmpTable').innerHTML = html + '</tbody>';
@@ -1296,8 +1362,7 @@ function renderKpis(y) {
   $('#dashKpis').innerHTML =
     kpi('YTD Revenue', inr(y.revenue), '≈ ' + usd(y.revenue)) +
     kpi('YTD Cost', costSpan(y.totalCost), '≈ −' + usd(y.totalCost)) +
-    kpi('Gross Profit', inr(y.grossProfit), '≈ ' + usd(y.grossProfit)) +
-    kpi('Gross Margin', pct(y.gm)) +
+    kpi('Margin', pct(y.gm)) +
     kpi('Active accounts', y.activeAccounts) +
     kpi('✅ / ⚠️ / 🔴', `${y.healthy} / ${y.review} / ${y.atrisk}`);
 }
@@ -1306,32 +1371,32 @@ function statusPill(s) {
   return `<span class="pill ${s}">${name}</span>`;
 }
 function renderMonthly(rows) {
-  const head = ['Month', 'Revenue', 'Manpower', 'Outsource', 'Tool', 'Total Cost', 'Gross Profit', 'GM %', 'Active', '✅', '⚠️', '🔴'];
+  const head = ['Month', 'Revenue', 'Manpower', 'Outsource', 'Tool', 'Total Cost', 'Margin', 'Active', '✅', '⚠️', '🔴'];
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
   const t = { revenue: 0, manpower: 0, outsourcing: 0, toolShare: 0, totalCost: 0, grossProfit: 0 };
   rows.forEach((r) => {
     Object.keys(t).forEach((k) => (t[k] += Number(r[k]) || 0));
-    html += `<tr ${rowLink('month', r.month)}><td class="l">${r.month}</td><td>${inrUsd(r.revenue)}</td>${costCell(r.manpower)}${costCell(r.outsourcing)}${costCell(r.toolShare)}${costCell(r.totalCost)}<td>${inrUsd(r.grossProfit)}</td><td>${pct(r.gm)}</td><td>${r.activeAccounts}</td><td>${r.healthy}</td><td>${r.review}</td><td>${r.atrisk}</td></tr>`;
+    html += `<tr ${rowLink('month', r.month)}><td class="l">${r.month}</td><td>${inrUsd(r.revenue)}</td>${costCell(r.manpower)}${costCell(r.outsourcing)}${costCell(r.toolShare)}${costCell(r.totalCost)}<td>${pct(r.gm)}</td><td>${r.activeAccounts}</td><td>${r.healthy}</td><td>${r.review}</td><td>${r.atrisk}</td></tr>`;
   });
   if (rows.length) {
     const tgm = t.revenue ? t.grossProfit / t.revenue : 0;
-    html += `<tr class="row-total"><td class="l"><b>Total</b></td><td>${inrUsd(t.revenue)}</td>${costCell(t.manpower)}${costCell(t.outsourcing)}${costCell(t.toolShare)}${costCell(t.totalCost)}<td>${inrUsd(t.grossProfit)}</td><td>${pct(tgm)}</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>`;
+    html += `<tr class="row-total"><td class="l"><b>Total</b></td><td>${inrUsd(t.revenue)}</td>${costCell(t.manpower)}${costCell(t.outsourcing)}${costCell(t.toolShare)}${costCell(t.totalCost)}<td>${pct(tgm)}</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>`;
   }
   $('#monthlyTable').innerHTML = html + '</tbody>';
   wireRowLinks($('#monthlyTable'));
 }
 
 function renderWings(rows) {
-  const head = ['Department', 'Revenue', 'Total Cost', 'Gross Profit', 'GM %', 'Status'];
+  const head = ['Department', 'Revenue', 'Total Cost', 'Margin', 'Status'];
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
   const t = { revenue: 0, totalCost: 0, grossProfit: 0 };
   rows.forEach((r) => {
     Object.keys(t).forEach((k) => (t[k] += Number(r[k]) || 0));
-    html += `<tr><td class="l">${r.wing}</td><td>${inrUsd(r.revenue)}</td>${costCell(r.totalCost)}<td>${inrUsd(r.grossProfit)}</td><td>${pct(r.gm)}</td><td>${statusPill(r.status)}</td></tr>`;
+    html += `<tr><td class="l">${r.wing}</td><td>${inrUsd(r.revenue)}</td>${costCell(r.totalCost)}<td>${pct(r.gm)}</td><td>${statusPill(r.status)}</td></tr>`;
   });
   if (rows.length) {
     const tgm = t.revenue ? t.grossProfit / t.revenue : 0;
-    html += `<tr class="row-total"><td class="l"><b>Total</b></td><td>${inrUsd(t.revenue)}</td>${costCell(t.totalCost)}<td>${inrUsd(t.grossProfit)}</td><td>${pct(tgm)}</td><td></td></tr>`;
+    html += `<tr class="row-total"><td class="l"><b>Total</b></td><td>${inrUsd(t.revenue)}</td>${costCell(t.totalCost)}<td>${pct(tgm)}</td><td></td></tr>`;
   }
   $('#wingTable').innerHTML = html + '</tbody>';
 }
@@ -1358,18 +1423,18 @@ function renderRanking() {
   const rows = (state.rankRows || []).filter((r) =>
     (!wing || r.wing === wing) && (!q || String(r.name || '').toLowerCase().includes(q)));
 
-  const head = ['#', 'Account', 'Department', 'Revenue', 'Total Cost', 'Gross Profit', 'GM %', 'Target', 'Variance', 'Status'];
+  const head = ['#', 'Account', 'Department', 'Revenue', 'Total Cost', 'Margin', 'Target', 'Variance', 'Status'];
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 1 || i === 2 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
-  if (!rows.length) html += `<tr><td colspan="10" class="l muted">${(state.rankRows || []).length ? 'No accounts match the filter.' : 'No entries yet — use the Update tab.'}</td></tr>`;
+  if (!rows.length) html += `<tr><td colspan="9" class="l muted">${(state.rankRows || []).length ? 'No accounts match the filter.' : 'No entries yet — use the Update tab.'}</td></tr>`;
   const t = { revenue: 0, totalCost: 0, grossProfit: 0 };
   rows.forEach((r, i) => {
     Object.keys(t).forEach((k) => (t[k] += Number(r[k]) || 0));
     const vClass = r.variance >= 0 ? 'style="color:var(--green)"' : 'style="color:var(--red)"';
-    html += `<tr ${rowLink('client', r.name)}><td class="l">${i + 1}</td><td class="l">${esc(r.name)}</td><td class="l">${esc(r.wing) || '—'}</td><td>${inrUsd(r.revenue)}</td>${costCell(r.totalCost)}<td>${inrUsd(r.grossProfit)}</td><td>${pct(r.gm)}</td><td>${pct(r.budgetGM)}</td><td ${vClass}>${(r.variance * 100).toFixed(1)}%</td><td>${statusPill(r.status)}</td></tr>`;
+    html += `<tr ${rowLink('client', r.name)}><td class="l">${i + 1}</td><td class="l">${esc(r.name)}</td><td class="l">${esc(r.wing) || '—'}</td><td>${inrUsd(r.revenue)}</td>${costCell(r.totalCost)}<td>${pct(r.gm)}</td><td>${pct(r.budgetGM)}</td><td ${vClass}>${(r.variance * 100).toFixed(1)}%</td><td>${statusPill(r.status)}</td></tr>`;
   });
   if (rows.length) {
     const tgm = t.revenue ? t.grossProfit / t.revenue : 0;
-    html += `<tr class="row-total"><td class="l"></td><td class="l"><b>Total</b></td><td class="l"></td><td>${inrUsd(t.revenue)}</td>${costCell(t.totalCost)}<td>${inrUsd(t.grossProfit)}</td><td>${pct(tgm)}</td><td>—</td><td>—</td><td></td></tr>`;
+    html += `<tr class="row-total"><td class="l"></td><td class="l"><b>Total</b></td><td class="l"></td><td>${inrUsd(t.revenue)}</td>${costCell(t.totalCost)}<td>${pct(tgm)}</td><td>—</td><td>—</td><td></td></tr>`;
   }
   $('#rankTable').innerHTML = html + '</tbody>';
   wireRowLinks($('#rankTable'));
@@ -1384,6 +1449,7 @@ function maybeOpenDetail() {
   if (p.get('view') !== 'detail') return false;
   const type = p.get('type') === 'client' ? 'client' : 'month';
   const key = p.get('key') || '';
+  if (p.get('dept') && state.roleInfo && state.roleInfo.canSwitchDept) state.activeDept = p.get('dept');
   switchView('detail');
   loadDetail(type, key);
   return true;
@@ -1395,7 +1461,7 @@ async function loadDetail(type, key) {
   document.title = `${type === 'client' ? 'Client' : 'Month'} · ${key} — BNGM`;
   host.innerHTML = '<p class="muted">Loading…</p>';
   try {
-    const d = await api(`/detail?type=${encodeURIComponent(type)}&key=${encodeURIComponent(key)}`);
+    const d = await api(withDept(`/detail?type=${encodeURIComponent(type)}&key=${encodeURIComponent(key)}`));
     renderDetail(d);
   } catch (e) { host.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
 }
@@ -1414,11 +1480,20 @@ function renderDetail(d) {
       <div class="cmp-var ${cls}">${vtxt}</div>
     </div>`;
   };
+  // #17 — word count is shown for Content entries only. Sum it across the items here.
+  const hasContent = (d.items || []).some((it) => it.wing === 'Content Creation');
+  const wcPlanTotal = (d.items || []).reduce((s, it) => s + (Number(it.wcPlanned) || 0), 0);
+  const wcActTotal = (d.items || []).reduce((s, it) => s + (Number(it.wcDelivered) || 0), 0);
+  const wcKpi = hasContent ? `<div class="cmp-kpi">
+      <div class="label">Word count</div>
+      <div class="cmp-two"><span class="plan">Plan ${wcPlanTotal.toLocaleString('en-IN')}</span><span class="act">Actual ${wcActTotal.toLocaleString('en-IN')}</span></div>
+      <div class="cmp-var ${wcActTotal - wcPlanTotal >= 0 ? 'up' : 'down'}">${(wcActTotal - wcPlanTotal >= 0 ? '+' : '') + (wcActTotal - wcPlanTotal).toLocaleString('en-IN')}</div>
+    </div>` : '';
   const totals = `<div class="cmp-row">
     ${k('Revenue', p.revenue, a.revenue, false)}
     ${k('Total cost', p.totalCost, a.totalCost, false, true)}
-    ${k('Gross profit', p.grossProfit, a.grossProfit, false)}
-    ${k('Gross margin', p.gm, a.gm, true)}
+    ${k('Margin', p.gm, a.gm, true)}
+    ${wcKpi}
   </div>`;
 
   if (!d.items || !d.items.length) {
@@ -1430,23 +1505,27 @@ function renderDetail(d) {
   // (month or client) pinned. Each row expands (▸) to show the resources, outsourcing
   // and notes behind it, Plan vs Actual.
   const firstLabel = d.type === 'client' ? 'Month · Dept' : 'Client · Dept';
-  const head = [firstLabel, 'Plan Rev', 'Act Rev', 'Plan Cost', 'Act Cost', 'Plan GP', 'Act GP', 'Plan GM', 'Act GM'];
+  const head = [firstLabel, 'Plan Rev', 'Act Rev', 'Plan Cost', 'Act Cost', 'Plan Margin', 'Act Margin']
+    .concat(hasContent ? ['Plan WC', 'Act WC'] : []);
+  const cols = head.length;
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l sticky-col' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
+  const wcCells = (it) => hasContent
+    ? `<td>${it.wing === 'Content Creation' ? (Number(it.wcPlanned) || 0).toLocaleString('en-IN') : '—'}</td><td>${it.wing === 'Content Creation' ? (Number(it.wcDelivered) || 0).toLocaleString('en-IN') : '—'}</td>`
+    : '';
   d.items.forEach((it, idx) => {
     const first = d.type === 'client' ? `${esc(it.month)} · ${esc(it.wing || '—')}` : `${esc(it.name)} · ${esc(it.wing || '—')}`;
     const pp = it.plan || {}, aa = it.actual || {};
     html += `<tr class="d-main"><td class="l sticky-col"><button type="button" class="d-exp" data-idx="${idx}" title="Show resources, outsourcing & notes">▸</button> ${first}</td>` +
       `<td>${inr(pp.revenue)}</td><td>${inr(aa.revenue)}</td>` +
       `${costCell(pp.totalCost)}${costCell(aa.totalCost)}` +
-      `<td>${inr(pp.grossProfit)}</td><td>${inr(aa.grossProfit)}</td>` +
-      `<td>${pct(pp.gm)}</td><td>${pct(aa.gm)}</td></tr>`;
-    html += `<tr class="d-sub hidden" data-sub="${idx}"><td colspan="9" class="l">${detailSub(it)}</td></tr>`;
+      `<td>${pct(pp.gm)}</td><td>${pct(aa.gm)}</td>${wcCells(it)}</tr>`;
+    html += `<tr class="d-sub hidden" data-sub="${idx}"><td colspan="${cols}" class="l">${detailSub(it)}</td></tr>`;
   });
   html += `<tr class="row-total"><td class="l sticky-col"><b>Total</b></td>` +
     `<td>${inr(p.revenue)}</td><td>${inr(a.revenue)}</td>` +
     `${costCell(p.totalCost)}${costCell(a.totalCost)}` +
-    `<td>${inr(p.grossProfit)}</td><td>${inr(a.grossProfit)}</td>` +
-    `<td>${pct(p.gm)}</td><td>${pct(a.gm)}</td></tr>`;
+    `<td>${pct(p.gm)}</td><td>${pct(a.gm)}</td>` +
+    `${hasContent ? `<td>${wcPlanTotal.toLocaleString('en-IN')}</td><td>${wcActTotal.toLocaleString('en-IN')}</td>` : ''}</tr>`;
 
   host.innerHTML = totals + `<div class="table-scroll glass" style="margin-top:16px"><table class="data detail-table">${html}</tbody></table></div>`;
   $$('.d-exp', host).forEach((b) => (b.onclick = () => {
@@ -1667,7 +1746,7 @@ async function toggleToolActive(id) {
   const payload = { active: !nowStop };
   if (nowStop) payload.stopDate = new Date().toISOString().slice(0, 10);
   await api('/tools/' + id, { method: 'PUT', body: JSON.stringify(payload) });
-  state.boot.tools = await api('/tools');
+  state.boot.tools = await api(withDept('/tools'));
   renderTools();
   toast(nowStop ? 'Tool stopped' : 'Tool resumed');
 }
@@ -1768,7 +1847,7 @@ function editTool(id, copyFrom) {
     }
     if (id) await api('/tools/' + id, { method: 'PUT', body: JSON.stringify(payload) });
     else await api('/tools', { method: 'POST', body: JSON.stringify(payload) });
-    state.boot.tools = await api('/tools');
+    state.boot.tools = await api(withDept('/tools'));
     renderTools();
     toast('Saved');
     return true;
@@ -1785,7 +1864,7 @@ async function deleteTool(id) {
   const t = (state.boot.tools || []).find((x) => x.id === id);
   if (!confirm(`Delete “${t ? t.name : 'this tool'}”?`)) return;
   await api('/tools/' + id, { method: 'DELETE' });
-  state.boot.tools = await api('/tools');
+  state.boot.tools = await api(withDept('/tools'));
   renderTools();
   toast('Deleted');
 }
@@ -1805,27 +1884,27 @@ function clientAddedDate(accs) {
 }
 
 // Super: one row per client NAME with a checkbox per department, plus rename/delete.
-function renderAccountsSuper() {
-  const wings = state.boot.wings || [];
-  const groups = clientGroups();
+// #10 — clients are open to all departments, so the Client List is a simple, UNSCOPED
+// roster of client names (rename/delete act on the client everywhere). No per-department
+// checkboxes; the department is chosen when logging an entry.
+function allClientNames() {
   const q = (state.accountQuery || '').trim().toLowerCase();
-  const names = [...groups.keys()].filter((n) => !q || n.toLowerCase().includes(q)).sort((a, b) => a.localeCompare(b));
-  const head = ['Client', 'Added', 'Departments', ''];
-  let html = '<thead><tr>' + head.map((h, i) => `<th class="${i < 3 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
-  if (!names.length) html += `<tr><td colspan="4" class="l muted">${groups.size ? 'No clients match the search.' : 'No clients yet. Use “+ New client”.'}</td></tr>`;
+  const names = (state.boot.clientNames && state.boot.clientNames.length)
+    ? state.boot.clientNames.slice()
+    : [...clientGroups().keys()];
+  return names.filter((n) => !q || String(n).toLowerCase().includes(q)).sort((a, b) => String(a).localeCompare(String(b)));
+}
+
+function renderAccountsSuper() {
+  const groups = clientGroups();
+  const names = allClientNames();
+  const head = ['Client', 'Added', ''];
+  let html = '<thead><tr>' + head.map((h, i) => `<th class="${i < 2 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
+  if (!names.length) html += `<tr><td colspan="3" class="l muted">${(state.boot.clientNames || []).length ? 'No clients match the search.' : 'No clients yet. Use “+ New client”.'}</td></tr>`;
   names.forEach((name) => {
-    const accs = groups.get(name) || [];
-    const has = (w) => accs.some((a) => (a.wing || '') === w);
-    const unassigned = accs.some((a) => !a.wing)
-      ? '<span class="tag-common" title="No department yet — tick a box to assign">Unassigned</span> ' : '';
-    const allOn = wings.length > 0 && wings.every((w) => has(w));
-    const boxes = wings.map((w) =>
-      `<label class="dept-box"><input type="checkbox" class="dept-cb" data-name="${esc(name)}" data-wing="${esc(w)}" ${has(w) ? 'checked' : ''}/> ${esc(w)}</label>`).join('');
-    const allBtn = `<button class="btn btn-sm dept-all" data-name="${esc(name)}" data-on="${allOn ? '1' : '0'}" title="${allOn ? 'Remove this client from every department' : 'Add this client to every department'}">${allOn ? '✕ None' : '✓ All'}</button>`;
     html += `<tr>
       <td class="l"><b>${esc(name)}</b></td>
-      <td class="l muted small">${clientAddedDate(accs)}</td>
-      <td class="l"><div class="dept-boxes">${allBtn}${unassigned}${boxes}</div></td>
+      <td class="l muted small">${clientAddedDate(groups.get(name) || [])}</td>
       <td class="client-actions">
         <button class="btn btn-sm rename-client" data-name="${esc(name)}">Rename</button>
         <button class="btn btn-sm btn-danger del-client" data-name="${esc(name)}">Delete</button>
@@ -1833,44 +1912,26 @@ function renderAccountsSuper() {
     </tr>`;
   });
   $('#accountsTable').innerHTML = html + '</tbody>';
-  $$('.dept-cb').forEach((cb) => (cb.onchange = () => toggleClientDept(cb.dataset.name, cb.dataset.wing, cb.checked)));
-  $$('.dept-all').forEach((b) => (b.onclick = () => setAllClientDepts(b.dataset.name, b.dataset.on !== '1')));
   $$('.rename-client').forEach((b) => (b.onclick = () => renameClient(b.dataset.name)));
   $$('.del-client').forEach((b) => (b.onclick = () => deleteClient(b.dataset.name)));
   $('#addAccountBtn').classList.remove('hidden');
-  // Super-only: the one-click "every client → every department" button lives beside
-  // "+ New client" and is only meaningful here.
-  const allBtn = $('#allClientsAllDeptsBtn');
-  if (allBtn) {
-    const allCovered = wings.length > 0 && names.length > 0 &&
-      names.every((n) => { const a = groups.get(n) || []; return wings.every((w) => a.some((x) => (x.wing || '') === w)); });
-    allBtn.classList.remove('hidden');
-    allBtn.disabled = !wings.length || !names.length || allCovered;
-    allBtn.title = allCovered
-      ? 'Every client is already in every department'
-      : 'Add every client to every department in one click';
-    allBtn.onclick = assignAllClientsAllDepts;
-  }
+  const allBtn = $('#allClientsAllDeptsBtn'); if (allBtn) allBtn.classList.add('hidden'); // retired with per-client dept checkboxes
 }
 
-// Departments: read-only list of their own clients (add via the button; no edit/delete).
+// Departments: read-only roster of clients (they can add; only Super renames/deletes).
 function renderAccountsDept() {
   const ro = !!state.roleInfo.readOnly;
-  const groups = clientGroups();
-  const q = (state.accountQuery || '').trim().toLowerCase();
-  const names = [...groups.keys()].filter((n) => !q || n.toLowerCase().includes(q)).sort((a, b) => a.localeCompare(b));
-  const head = ['Client', 'Department', 'Added'];
+  const names = allClientNames();
+  const head = ['Client', 'Added'];
   let html = '<thead><tr>' + head.map((h) => `<th class="l">${h}</th>`).join('') + '</tr></thead><tbody>';
-  if (!names.length) html += `<tr><td colspan="3" class="l muted">${groups.size ? 'No clients match the search.' : `No clients in your department yet.${ro ? '' : ' Use “+ New client”.'}`}</td></tr>`;
+  if (!names.length) html += `<tr><td colspan="2" class="l muted">${(state.boot.clientNames || []).length ? 'No clients match the search.' : `No clients yet.${ro ? '' : ' Use “+ New client”.'}`}</td></tr>`;
+  const groups = clientGroups();
   names.forEach((name) => {
-    const accs = groups.get(name) || [];
-    const depts = accs.map((a) => esc(a.wing || 'Unassigned')).join(', ');
-    html += `<tr><td class="l">${esc(name)}</td><td class="l">${depts}</td><td class="l muted small">${clientAddedDate(accs)}</td></tr>`;
+    html += `<tr><td class="l">${esc(name)}</td><td class="l muted small">${clientAddedDate(groups.get(name) || [])}</td></tr>`;
   });
   $('#accountsTable').innerHTML = html + '</tbody>';
   $('#addAccountBtn').classList.toggle('hidden', ro || !state.roleInfo.canCreateAccounts);
-  const allBtn = $('#allClientsAllDeptsBtn'); // Super-only — never shown to department roles
-  if (allBtn) allBtn.classList.add('hidden');
+  const allBtn = $('#allClientsAllDeptsBtn'); if (allBtn) allBtn.classList.add('hidden');
 }
 
 // Super — tick/untick a department for a client. Ticking repurposes an unassigned
@@ -1890,7 +1951,7 @@ async function toggleClientDept(name, wing, checked) {
         await api('/accounts/' + acc.id, { method: 'DELETE' });
       }
     }
-    state.boot = await api('/bootstrap');
+    state.boot = await api(withDept('/bootstrap'));
     renderAccounts();
     toast('Saved');
   } catch (e) { toast(e.message); renderAccounts(); }
@@ -1918,7 +1979,7 @@ async function setAllClientDepts(name, checked) {
       if (!confirm(`Remove “${name}” from ALL departments? Every department's data for this client will be permanently deleted.`)) return;
       for (const a of assigned) await api('/accounts/' + a.id, { method: 'DELETE' });
     }
-    state.boot = await api('/bootstrap');
+    state.boot = await api(withDept('/bootstrap'));
     renderAccounts();
     toast(checked ? 'Added to every department' : 'Removed from every department');
   } catch (e) { toast(e.message); renderAccounts(); }
@@ -1949,13 +2010,13 @@ async function assignAllClientsAllDepts() {
   if (btn) { btn.disabled = true; btn.textContent = 'Assigning…'; }
   try {
     const r = await api('/accounts/assign-all-departments', { method: 'POST', body: JSON.stringify({}) });
-    state.boot = await api('/bootstrap');
+    state.boot = await api(withDept('/bootstrap'));
     renderAccounts();
     toast(`Done — ${r.added} assignment(s) across every department`);
   } catch (e) {
     if (btn) { btn.disabled = false; btn.textContent = orig; }
     toast(e.message);
-    try { state.boot = await api('/bootstrap'); } catch { /* keep current view */ }
+    try { state.boot = await api(withDept('/bootstrap')); } catch { /* keep current view */ }
     renderAccounts();
   }
 }
@@ -1967,18 +2028,16 @@ function renameClient(name) {
   openModal('Rename client', body, async () => {
     const nn = $('#m_name').value.trim();
     if (!nn) { toast('Name required'); return false; }
-    const accs = clientGroups().get(name) || [];
-    for (const a of accs) await api('/accounts/' + a.id, { method: 'PUT', body: JSON.stringify({ name: nn }) });
-    state.boot = await api('/bootstrap'); renderAccounts(); toast('Renamed'); return true;
+    await api('/clients/rename', { method: 'PUT', body: JSON.stringify({ from: name, to: nn }) });
+    state.boot = await api(withDept('/bootstrap')); renderAccounts(); toast('Renamed'); return true;
   });
 }
 
 async function deleteClient(name) {
   if (!confirm(`Delete client “${name}” and ALL its data across every department? This cannot be undone.`)) return;
-  const accs = clientGroups().get(name) || [];
   try {
-    for (const a of accs) await api('/accounts/' + a.id, { method: 'DELETE' });
-    state.boot = await api('/bootstrap'); renderAccounts(); toast('Client deleted');
+    await api('/clients/' + encodeURIComponent(name), { method: 'DELETE' });
+    state.boot = await api(withDept('/bootstrap')); renderAccounts(); toast('Client deleted');
   } catch (e) { toast(e.message); }
 }
 
@@ -1987,22 +2046,20 @@ $('#addAccountBtn').addEventListener('click', newClient);
 // New client. Super picks any set of departments; a department role is locked to its
 // own department (it can only add, never choose another department — user 2026-08-21).
 function newClient() {
+  // #10 — a client is just a name, open to every department. Super/Digital Marketing
+  // create it unassigned (the department is chosen when logging an entry). A plain
+  // department role anchors it under its own department.
   const body = el('div');
-  if (isSuper()) {
-    const wings = state.boot.wings || [];
-    body.innerHTML = `
-      <label class="field"><span>Client name</span><input id="m_name" placeholder="Client name" /></label>
-      <div class="field"><span>Departments</span>
-        <div class="dept-boxes modal-boxes">${wings.map((w) => `<label class="dept-box"><input type="checkbox" class="new-dept" value="${esc(w)}"/> ${esc(w)}</label>`).join('')}</div>
-      </div>
-      <p class="muted small">Tick the departments this client belongs to — you can change these any time.</p>`;
+  const canAllDepts = isSuper() || state.roleInfo.canSwitchDept;
+  if (canAllDepts) {
+    body.innerHTML = `<label class="field"><span>Client name</span><input id="m_name" placeholder="Client name" /></label>
+      <p class="muted small">Clients are open to every department — pick the department when you log an entry.</p>`;
     openModal('New client', body, async () => {
       const name = $('#m_name').value.trim();
       if (!name) { toast('Name required'); return false; }
-      const picked = $$('.new-dept', body).filter((c) => c.checked).map((c) => c.value);
-      if (!picked.length) { toast('Pick at least one department'); return false; }
-      for (const w of picked) await api('/accounts', { method: 'POST', body: JSON.stringify({ name, wing: w }) });
-      state.boot = await api('/bootstrap'); renderAccounts(); toast('Client added'); return true;
+      // Anchor the client with an unassigned account so it appears in the roster.
+      await api('/accounts', { method: 'POST', body: JSON.stringify({ name, wing: '' }) });
+      state.boot = await api(withDept('/bootstrap')); renderAccounts(); toast('Client added'); return true;
     });
   } else {
     const own = (state.roleInfo.wings && state.roleInfo.wings.length) ? state.roleInfo.wings : [];
@@ -2019,7 +2076,7 @@ function newClient() {
       if (!own.length) { toast('No department assigned to your role'); return false; }
       const wing = own.length > 1 ? $('#m_wing').value : own[0];
       await api('/accounts', { method: 'POST', body: JSON.stringify({ name, wing }) });
-      state.boot = await api('/bootstrap'); renderAccounts(); toast('Client added'); return true;
+      state.boot = await api(withDept('/bootstrap')); renderAccounts(); toast('Client added'); return true;
     });
   }
 }
@@ -2062,7 +2119,7 @@ async function renderSettings() {
       resourceMonthlyHours: +$('#a_resCap').value || 180,
       gmMin: (+$('#a_min').value) / 100, gmHealthy: (+$('#a_healthy').value) / 100,
     }) });
-    state.boot = await api('/bootstrap'); renderFx(); toast('Assumptions saved');
+    state.boot = await api(withDept('/bootstrap')); renderFx(); toast('Assumptions saved');
   };
 
   // team / resources manager button

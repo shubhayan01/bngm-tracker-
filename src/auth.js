@@ -13,12 +13,13 @@ const jwt = require('jsonwebtoken');
 const ROLES = {
   // C. Super — everything. Only Super can edit / delete clients (departments may
   // only add them) and assign a client to departments (user, 2026-08-21).
-  super: { label: 'Super Admin', wings: '*', canCreateAccounts: true, canManageUsers: true, canEditSettings: true, canManageTools: true, canManageClients: true },
+  super: { label: 'Super Admin', wings: '*', canCreateAccounts: true, canManageUsers: true, canEditSettings: true, canManageTools: true, canManageClients: true, canSwitchDept: true },
 
-  // B. Digital Marketing (was "Admin") — reports of all departments except Content.
-  // Read-only for now; Phase 3 (user, 2026-09-14) makes it full read/write + adds the
-  // department switcher.
-  admin: { label: 'Digital Marketing', wings: '*', except: ['Content Creation'], readOnly: true, canCreateAccounts: false, canManageUsers: false, canEditSettings: false, canManageTools: false, canManageClients: false },
+  // B. Digital Marketing (was "Admin") — full read/write across EVERY department
+  // (user, 2026-09-14, #8). It can see, fill, fetch, check and update any department
+  // via the top-bar department switcher. It cannot manage user accounts, edit global
+  // assumptions/settings, or rename/delete/reassign clients (that stays Super-only).
+  admin: { label: 'Digital Marketing', wings: '*', canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false, canManageClients: false, canSwitchDept: true },
 
   // Business Development — kept as a scoped department-style role. It has no delivery
   // wing of its own, so this starts empty; add wing names to grant visibility.

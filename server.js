@@ -48,6 +48,26 @@ function visibleAccounts(role) {
   return store.accounts.filter((a) => roleCanSeeWing(role, a.wing));
 }
 
+// #8 (user, 2026-09-14) — a role with `canSwitchDept` (Super, Digital Marketing) may
+// narrow the whole app to ONE department via ?dept=. These helpers apply that scope on
+// top of the role's normal visibility; without a valid dept they are the defaults.
+function requestedDept(req) {
+  const dept = req.query && req.query.dept ? String(req.query.dept) : '';
+  if (!dept || !req.roleDef || !req.roleDef.canSwitchDept) return '';
+  const all = visibleWings(req.role, settings().wings);
+  return all.includes(dept) ? dept : '';
+}
+function scopedAccounts(req) {
+  const dept = requestedDept(req);
+  if (dept) return db.get().accounts.filter((a) => a.wing === dept);
+  return visibleAccounts(req.role);
+}
+function scopedWings(req) {
+  const dept = requestedDept(req);
+  if (dept) return [dept];
+  return visibleWings(req.role, settings().wings);
+}
+
 function canEditAccount(role, account) {
   return roleCanSeeWing(role, account.wing);
 }
@@ -146,6 +166,7 @@ function publicRole(role) {
     canEditSettings: r.canEditSettings,
     canManageTools: r.canManageTools,
     canManageClients: !!r.canManageClients,
+    canSwitchDept: !!r.canSwitchDept,
   };
 }
 
@@ -156,15 +177,21 @@ app.get('/api/bootstrap', auth, async (req, res) => {
   res.json({
     roleInfo: publicRole(req.role),
     roles: Object.fromEntries(Object.keys(ROLES).map((k) => [k, ROLES[k].label])),
-    accounts: visibleAccounts(req.role),
+    accounts: scopedAccounts(req),
     associates: db.get().associates,
     assumptions: s.assumptions,
     months: s.months,
-    // Departments only ever see their own wing names; Super sees all; Admin sees
-    // all except Content Creation.
-    wings: visibleWings(req.role, s.wings),
+    // Departments only ever see their own wing names; Super/Digital Marketing see all.
+    // `wings` is scoped to the active department (?dept=) when one is picked;
+    // `allDepartments` is the full list a switcher role may switch between.
+    wings: scopedWings(req),
+    allDepartments: visibleWings(req.role, s.wings),
+    activeDept: requestedDept(req) || '',
+    // #10 — every distinct client name, unscoped, so any role can pick any client
+    // (clients are open to all departments; the department is chosen at entry time).
+    clientNames: [...new Set((db.get().accounts || []).map((a) => a.name))].sort((a, b) => String(a).localeCompare(String(b))),
     jobTypes: s.jobTypes,
-    tools: visibleTools(req.role),
+    tools: scopedTools(req),
     toolBudgets: s.toolBudgets || {},
     helpEnabled: groq.isEnabled(s),
     fx: { rate: rate.rate, live: rate.live, at: rate.at },
@@ -329,6 +356,30 @@ app.post('/api/accounts/assign-all-departments', auth, requirePerm('canManageCli
   db.save().then(() => res.json({ ok: true, added, clients: byName.size, departments: wings.length }));
 });
 
+// #10 (user, 2026-09-14) — clients are open to all departments and managed by NAME,
+// so rename/delete act on every department-account of that client regardless of any
+// active department scope. Super only.
+app.put('/api/clients/rename', auth, requirePerm('canManageClients'), (req, res) => {
+  const from = String((req.body && req.body.from) || '').trim();
+  const to = String((req.body && req.body.to) || '').trim();
+  if (!from || !to) return res.status(400).json({ error: 'from and to are required' });
+  const store = db.get();
+  let n = 0;
+  store.accounts.forEach((a) => { if (String(a.name).toLowerCase() === from.toLowerCase()) { a.name = to; n++; } });
+  if (!n) return res.status(404).json({ error: 'Client not found' });
+  db.save().then(() => res.json({ ok: true, renamed: n }));
+});
+app.delete('/api/clients/:name', auth, requirePerm('canManageClients'), (req, res) => {
+  const name = String(req.params.name || '').trim();
+  const store = db.get();
+  const ids = new Set(store.accounts.filter((a) => String(a.name).toLowerCase() === name.toLowerCase()).map((a) => a.id));
+  if (!ids.size) return res.status(404).json({ error: 'Client not found' });
+  store.accounts = store.accounts.filter((a) => !ids.has(a.id));
+  const before = store.entries.length;
+  store.entries = store.entries.filter((e) => !ids.has(e.accountId));
+  db.save().then(() => res.json({ ok: true, removed: ids.size, removedEntries: before - store.entries.length }));
+});
+
 // ---------- tools catalog ----------
 // View: Super sees all; other roles see only their own department's tools.
 // Edit / delete: Super only.
@@ -409,8 +460,19 @@ function visibleTools(role) {
   return all.filter((t) => !t.common && (t.department === 'General' || wings.includes(t.department)));
 }
 
+// Tools scoped to the active department (?dept=) for a switcher role: that
+// department's own tools plus any shared/common tool whose split includes it.
+function scopedTools(req) {
+  const all = visibleTools(req.role);
+  const dept = requestedDept(req);
+  if (!dept) return all;
+  return all.filter((t) => t.common
+    ? (t.deptCosts && Object.keys(t.deptCosts).includes(dept))
+    : t.department === dept);
+}
+
 app.get('/api/tools', auth, (req, res) => {
-  res.json(visibleTools(req.role));
+  res.json(scopedTools(req));
 });
 
 app.post('/api/tools', auth, requirePerm('canManageTools'), (req, res) => {
@@ -455,6 +517,16 @@ app.get('/api/associates', auth, (req, res) => {
   res.json(db.get().associates || []);
 });
 
+// #10 — a resource may belong to one or more departments (assigned in Manage Team).
+// Only real, known department (wing) names are kept.
+function cleanDepartments(v) {
+  const valid = new Set((settings().wings || []).map((w) => String(w)));
+  if (!Array.isArray(v)) return [];
+  const out = [];
+  for (const d of v) { const name = String(d || '').trim(); if (valid.has(name) && !out.includes(name)) out.push(name); }
+  return out;
+}
+
 app.post('/api/associates', auth, requirePerm('canEditSettings'), (req, res) => {
   const b = req.body || {};
   if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: 'Name required' });
@@ -462,7 +534,7 @@ app.post('/api/associates', auth, requirePerm('canEditSettings'), (req, res) => 
   const category = roster.normCategory(b.category != null ? b.category : b.type);
   const email = String(b.name).trim();
   const fullName = (b.fullName && String(b.fullName).trim()) || roster.emailToName(email) || email;
-  const a = { id: db.nextId('associates'), name: email, fullName, category, type: roster.typeFromCategory(category) };
+  const a = { id: db.nextId('associates'), name: email, fullName, category, type: roster.typeFromCategory(category), departments: cleanDepartments(b.departments) };
   store.associates.push(a);
   db.save().then(() => res.json(a));
 });
@@ -480,6 +552,7 @@ app.put('/api/associates/:id', auth, requirePerm('canEditSettings'), (req, res) 
     a.category = roster.normCategory(b.category != null ? b.category : b.type);
     a.type = roster.typeFromCategory(a.category);
   }
+  if (b.departments != null) a.departments = cleanDepartments(b.departments);
   db.save().then(() => res.json(a));
 });
 
@@ -658,7 +731,7 @@ app.get('/api/dashboard', auth, (req, res) => {
   const s = settings();
   const mode = req.query.mode === 'planned' ? 'planned' : req.query.mode === 'actual' ? 'actual' : 'auto';
   const store = db.get();
-  const visIds = new Set(visibleAccounts(req.role).map((a) => a.id));
+  const visIds = new Set(scopedAccounts(req).map((a) => a.id));
   const accById = Object.fromEntries(store.accounts.map((a) => [a.id, a]));
   const totals = monthTotals(mode);
 
@@ -684,7 +757,7 @@ app.get('/api/dashboard', auth, (req, res) => {
   const ytd = aggregate(rows, s.assumptions);
 
   // 2) Wing summary (YTD)
-  const wingSet = visibleWings(req.role, s.wings);
+  const wingSet = scopedWings(req);
   const wingSummary = wingSet.map((w) => {
     const wr = rows.filter((r) => r.acc && r.acc.wing === w);
     return { wing: w, ...aggregate(wr, s.assumptions) };
@@ -885,7 +958,7 @@ app.get('/api/detail', auth, (req, res) => {
   const store = db.get();
   const type = req.query.type === 'client' ? 'client' : 'month';
   const key = String(req.query.key || '');
-  const visIds = new Set(visibleAccounts(req.role).map((a) => a.id));
+  const visIds = new Set(scopedAccounts(req).map((a) => a.id));
   const accById = Object.fromEntries(store.accounts.map((a) => [a.id, a]));
   const assocById = Object.fromEntries((store.associates || []).map((a) => [a.id, a]));
 
@@ -902,6 +975,8 @@ app.get('/api/detail', auth, (req, res) => {
       month: e.month,
       plan: computeFor(e, 'planned'),
       actual: computeFor(e, 'actual'),
+      wcPlanned: compute.num(e.wcPlanned),   // #17 — planned/actual word count (Content)
+      wcDelivered: compute.num(e.wcDelivered),
       resourcesPlan: resolveResources(e.resourcesPlan),
       resourcesActual: resolveResources(e.resourcesActual),
       outsourcingPlan: compute.outsourcingArr(e, 'planned'),
