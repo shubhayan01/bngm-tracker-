@@ -15,6 +15,18 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json({ limit: '2mb' }));
+
+// Keep the whole app OUT of search engines (user, 2026-09-14). This hides it from
+// Google/Bing listings — it is NOT access control (anyone with the link + a login can
+// still reach it); the login + strong passwords + JWT_SECRET are what protect the data.
+app.use((req, res, next) => {
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet');
+  next();
+});
+app.get('/robots.txt', (req, res) => {
+  res.type('text/plain').send('User-agent: *\nDisallow: /\n');
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ---------- helpers ----------
