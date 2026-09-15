@@ -449,7 +449,7 @@ function cleanTool(b, base = {}) {
     name: b.name != null ? String(b.name).trim() : base.name || '',
     description: b.description != null ? String(b.description) : base.description || '',
     cost,
-    currency: b.currency === 'INR' ? 'INR' : b.currency === 'USD' ? 'USD' : base.currency || 'USD',
+    currency: b.currency === 'INR' ? 'INR' : b.currency === 'USD' ? 'USD' : base.currency || 'INR',
     common,
     quantity,
     department,
@@ -1434,5 +1434,3 @@ db.init()
     console.error(`  ${err.code || ''} ${err.message}\n`);
     process.exit(1);
   });
-
-// persistence check redeploy — 2026-09-14T12:12:22Z

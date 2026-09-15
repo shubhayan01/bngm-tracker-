@@ -1799,17 +1799,18 @@ function editTool(id, copyFrom) {
   body.innerHTML = `
     <label class="field"><span>Tool name</span><input id="t_name" value="${t ? esc(t.name) : ''}" placeholder="e.g. Ahrefs" /></label>
     <label class="field"><span>What is it?</span><textarea id="t_desc" rows="2" placeholder="Short description">${t ? esc(t.description) : ''}</textarea></label>
-    <label class="field"><span>Department</span><select id="t_dept">${deptOpts}</select>
-      <span class="muted small" style="margin-top:4px">Pick <b>All departments</b> for a shared tool whose cost is split per department.</span>
-    </label>
-    <div class="field-row" id="t_costRow">
-      <label class="field" id="t_costWrap"><span>Cost / month (per unit)</span><input id="t_cost" type="number" min="0" step="0.01" value="${t && !t.common ? (t.cost || 0) : ''}" placeholder="0" /></label>
+    <div class="field-row">
+      <label class="field"><span>Department</span><select id="t_dept">${deptOpts}</select></label>
       <label class="field"><span>Currency</span>
         <select id="t_cur">
-          <option value="USD" ${!t || t.currency !== 'INR' ? 'selected' : ''}>USD ($)</option>
-          <option value="INR" ${t && t.currency === 'INR' ? 'selected' : ''}>INR (₹)</option>
+          <option value="INR" ${!t || t.currency !== 'USD' ? 'selected' : ''}>INR (₹)</option>
+          <option value="USD" ${t && t.currency === 'USD' ? 'selected' : ''}>USD ($)</option>
         </select>
       </label>
+    </div>
+    <span class="muted small" style="display:block;margin:-6px 0 10px">Pick <b>All departments</b> for a shared tool whose cost is split per department.</span>
+    <div class="field-row" id="t_costRow">
+      <label class="field" id="t_costWrap"><span>Cost / month (per unit)</span><input id="t_cost" type="number" min="0" step="0.01" value="${t && !t.common ? (t.cost || 0) : ''}" placeholder="0" /></label>
       <label class="field" id="t_qtyWrap"><span>Quantity</span><input id="t_qty" type="number" min="1" step="1" value="${qty}" /></label>
     </div>
     <div class="muted small" id="t_costTotal" style="margin:-6px 0 12px"></div>
