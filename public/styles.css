@@ -782,3 +782,91 @@ table.data tbody tr.dept-head td.sticky-col { background: var(--glass-2); }
 /* Recent-updates feed cards are clickable (jump back to that entry, #2) */
 .sf-item { cursor: pointer; transition: border-color .12s ease, background .12s ease; }
 .sf-item:hover { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 8%, var(--glass-2)); }
+
+/* ============================================================
+   UI/UX refresh + mobile pass (user, 2026-09-15)
+   Additive layer: a richer accent, softer components, and a
+   proper small-screen / phone layout. Nothing above is removed.
+   ============================================================ */
+
+/* ---- 1) Refreshed accent: indigo -> violet, still muted (not neon) ---- */
+:root, :root[data-theme="dark"] { --brand: #6b7ff0; --brand-2: #9a7bf5; }
+:root[data-theme="light"] { --brand: #5568d8; --brand-2: #7c5fe0; }
+
+/* ---- 2) Inputs: rounder, with a clear focus ring ---- */
+input, select, textarea { border-radius: 12px; }
+input:focus, select:focus, textarea:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent);
+}
+
+/* ---- 3) Buttons: a little more presence ---- */
+.btn { border-radius: 12px; }
+.btn-primary { box-shadow: 0 8px 22px color-mix(in srgb, var(--brand) 32%, transparent); }
+.btn-primary:hover { transform: translateY(-1px); filter: brightness(1.06); }
+
+/* ---- 4) KPI cards: bigger numbers + lift ---- */
+.kpi { border-radius: 18px; padding: 18px 20px; }
+.kpi .value { font-size: 26px; }
+
+/* ---- 5) Tabs / report pills: consistent pill shape ---- */
+.tab { border-radius: 12px; }
+
+/* ---- 6) Tables: a touch more breathing room ---- */
+table.data th, table.data td { padding: 12px 14px; }
+table.data thead th { letter-spacing: .4px; }
+
+/* ============================================================
+   Small screens & phones
+   ============================================================ */
+@media (max-width: 720px) {
+  .main { padding: 14px 14px 44px; }
+
+  /* Top bar: brand + controls on top row, tabs scroll on their own row */
+  .topbar { flex-wrap: wrap; gap: 10px; row-gap: 8px; padding: 10px 14px; }
+  .topbar-left { flex: 1 1 auto; min-width: 0; }
+  .topbar-right { flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+  .tabs { order: 3; flex-basis: 100%; flex-wrap: nowrap; overflow-x: auto; gap: 6px; padding-bottom: 2px; }
+  .tabs::-webkit-scrollbar { height: 0; }
+  .tab { flex: 0 0 auto; white-space: nowrap; }
+  .dept-switcher { max-width: 160px; }
+  #fyBadge { display: none; }
+
+  /* Headings, controls and searches go full width */
+  .view-head { align-items: flex-start; }
+  .controls { flex-wrap: wrap; width: 100%; }
+  .rank-search, #toolSearch, #accountSearch { min-width: 0; flex: 1 1 100%; }
+
+  /* One column everywhere it was multi-column */
+  .cards, .grid-form, .grid-form.small, .field-row { grid-template-columns: 1fr !important; }
+  .entry-head .eh-field { flex: 1 1 100%; }
+  .kpi-row { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+
+  /* Report picker + segmented toggles scroll instead of stacking tall */
+  .report-filter, .seg { flex-wrap: nowrap; overflow-x: auto; }
+  .report-filter::-webkit-scrollbar, .seg::-webkit-scrollbar { height: 0; }
+
+  /* Modals become a full-screen sheet */
+  .modal { padding: 0; }
+  .modal-card { width: 100%; max-width: 100%; height: 100%; max-height: 100%; border-radius: 0; }
+
+  /* 16px inputs stop iOS auto-zoom; comfortable tap targets */
+  input, select, textarea { font-size: 16px; }
+  .btn { padding: 10px 16px; }
+
+  /* Team manager stays usable when narrow */
+  .team-row, .team-add { grid-template-columns: 1fr 1fr; }
+  .team-row .tm-cat, .team-add #tm_newCat, .team-row .tm-save, .team-row .tm-del { grid-column: auto; }
+
+  /* Tables keep horizontal scroll with momentum */
+  .table-scroll { -webkit-overflow-scrolling: touch; }
+
+  h2 { font-size: 19px; }
+}
+
+@media (max-width: 420px) {
+  .brand-mark.sm { width: 28px; height: 28px; font-size: 12px; }
+  .role-badge { display: none; }              /* switcher + logout stay */
+  .kpi-row { grid-template-columns: 1fr 1fr; }
+  .login-card { width: 100%; padding: 24px 20px; }
+  .topbar-right { gap: 6px; }
+}
