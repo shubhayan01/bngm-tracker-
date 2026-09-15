@@ -595,6 +595,8 @@ app.get('/api/entry', auth, (req, res) => {
     computed: computeFor(entry, mode),
     capacity: resourceCapacity(),
     usageOther: resourceMonthUsage(month, usageMode, accountId),
+    toolDeptMonthly: deptToolMonthlyINR(acc.wing, month),
+    deptActualRevOther: deptActualRevExcluding(acc.wing, month, accountId),
   });
 });
 
@@ -696,6 +698,21 @@ function computeFor(entry, mode = 'auto') {
   });
 }
 
+// Actual revenue of OTHER clients in a department+month — lets the entry screen show a
+// LIVE tool-cost apportioning as the user types this client's revenue (user, 2026-09-15).
+function deptActualRevExcluding(dept, month, excludeAccountId) {
+  if (!dept) return 0;
+  const store = db.get();
+  const accById = Object.fromEntries(store.accounts.map((a) => [a.id, a]));
+  let sum = 0;
+  for (const e of store.entries) {
+    if (e.accountId === excludeAccountId || e.month !== month) continue;
+    const a = accById[e.accountId];
+    if (a && a.wing === dept) sum += compute.num(e.revActual);
+  }
+  return sum;
+}
+
 app.put('/api/entry', auth, requireWrite, (req, res) => {
   const b = req.body || {};
   const accountId = Number(b.accountId);
@@ -795,6 +812,8 @@ app.put('/api/entry', auth, requireWrite, (req, res) => {
     computed: computeFor(entry, mode),
     capacity: resourceCapacity(),
     usageOther: resourceMonthUsage(month, usageMode, accountId),
+    toolDeptMonthly: deptToolMonthlyINR(acc.wing, month),
+    deptActualRevOther: deptActualRevExcluding(acc.wing, month, accountId),
   }));
 });
 

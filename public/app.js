@@ -482,8 +482,24 @@ function loadBlankEntry() {
   };
   entry.capacity = (state.boot.assumptions && state.boot.assumptions.resourceMonthlyHours) || 180;
   entry.usageOther = {};
+  entry.toolDeptMonthly = deptToolMonthlyClient(entry.pendingWing); // approx until first save
+  entry.deptActualRevOther = 0;
   normalizeEntryData(entry.data);
   renderEntryBody();
+}
+
+// Approximate a department's monthly tool cost client-side (for the live preview on a
+// brand-new client before its first save). The server computes the exact, month-aware
+// figure on save.
+function deptToolMonthlyClient(dept) {
+  if (!dept) return 0;
+  let sum = 0;
+  (state.boot.tools || []).forEach((t) => {
+    if (t.active === false) return;
+    if (t.common && t.deptCosts && t.deptCosts[dept] != null) sum += amtInr(t.deptCosts[dept], t.currency);
+    else if (!t.common && t.department === dept) sum += toolMonthlyInr(t);
+  });
+  return sum;
 }
 
 function setModeButtons() {
@@ -496,6 +512,8 @@ async function loadEntry() {
   entry.data = r.entry;
   entry.capacity = r.capacity || 180;
   entry.usageOther = r.usageOther || {}; // hours booked on OTHER clients this month, per resource id
+  entry.toolDeptMonthly = r.toolDeptMonthly || 0;      // this dept's monthly tool cost (₹)
+  entry.deptActualRevOther = r.deptActualRevOther || 0; // other clients' actual revenue in this dept+month
   normalizeEntryData(entry.data);
   renderEntryBody();
 }
@@ -860,6 +878,8 @@ async function saveEntry() {
     entry.data = r.entry;
     if (r.capacity) entry.capacity = r.capacity;
     if (r.usageOther) entry.usageOther = r.usageOther;
+    if (r.toolDeptMonthly != null) entry.toolDeptMonthly = r.toolDeptMonthly;
+    if (r.deptActualRevOther != null) entry.deptActualRevOther = r.deptActualRevOther;
     normalizeEntryData(entry.data);
     logSaveFeed();
     const c = r.computed;
@@ -888,12 +908,19 @@ function localCompute() {
     manpower += (Number(r.hours) || 0) * rateFor(assoc);
   }
   const outsourcing = (d[f.out] || []).reduce((s, o) => s + (Number(o.cost) || 0), 0);
-  const totalCost = manpower + outsourcing;
+  // Live tool share = this department's monthly tool cost × this client's share of the
+  // department's ACTUAL revenue this month (other clients' actual revenue comes from the
+  // server; this client's is what's typed in Actual). Updates as you type.
+  const actualRev = Number(d.revActual) || 0;
+  const deptMonthly = Number(entry.toolDeptMonthly) || 0;
+  const denom = actualRev + (Number(entry.deptActualRevOther) || 0);
+  const toolShare = (deptMonthly > 0 && denom > 0) ? deptMonthly * (actualRev / denom) : 0;
+  const totalCost = manpower + outsourcing + toolShare;
   const grossProfit = revenue - totalCost;
   const gm = revenue > 0 ? grossProfit / revenue : 0;
   let status = 'none';
   if (revenue > 0) status = gm >= a.gmHealthy ? 'healthy' : gm >= a.gmMin ? 'review' : 'atrisk';
-  return { revenue, manpower, outsourcing, toolShare: 0, totalCost, grossProfit, gm, status, approx: true };
+  return { revenue, manpower, outsourcing, toolShare, totalCost, grossProfit, gm, status, approx: true };
 }
 
 function renderPreview(computed) {
@@ -908,7 +935,7 @@ function renderPreview(computed) {
     row('Tool share', '− ' + inr(c.toolShare) + (c.approx ? ' *' : '')) +
     `<div class="prow total"><span>Gross profit</span><span class="val">${inrUsd(c.grossProfit)}</span></div>` +
     `<div class="gm-badge st-${c.status}">GM ${pct(c.gm)} · ${stName}</div>` +
-    (c.approx ? '<p class="muted" style="font-size:11px;margin-top:10px">* tool-share is apportioned across accounts when you save.</p>' : '');
+    (c.approx ? '<p class="muted" style="font-size:11px;margin-top:10px">* Tool share = your department’s tool cost × your share of the department’s <b>actual</b> revenue this month. Finalised on save.</p>' : '');
 }
 
 // ---- team / resource manager (add / adjust senior vs junior) ----
@@ -2155,30 +2182,8 @@ async function renderSettings() {
   // team / resources manager button
   $('#manageTeamBtn').onclick = manageTeam;
 
-  const tp = $('#toolPoolForm');
-  tp.innerHTML = s.months.map((m) => `<label>${m}<input id="tp_${m}" type="number" value="${(s.toolPool && s.toolPool[m]) || 0}" /></label>`).join('');
-  $('#saveToolPool').onclick = async () => {
-    const payload = {};
-    s.months.forEach((m) => { payload[m] = +$('#tp_' + m).value || 0; });
-    await api('/settings/toolpool', { method: 'PUT', body: JSON.stringify(payload) });
-    toast('Tool pool saved');
-  };
-
-  // tool budget by department (super only) — drives spend-vs-budget on Tools page
-  const tb = $('#toolBudgetForm');
-  if (tb) {
-    const budgets = s.toolBudgets || {};
-    const depts = [...new Set([...(s.wings || []), 'All departments', ...Object.keys(budgets)])];
-    const key = (d) => 'tb_' + d.replace(/[^a-z0-9]/gi, '_');
-    tb.innerHTML = depts.map((d) => `<label>${esc(d)}<input id="${key(d)}" type="number" min="0" value="${Number(budgets[d]) || 0}" /></label>`).join('');
-    $('#saveToolBudgets').onclick = async () => {
-      const payload = {};
-      depts.forEach((d) => { payload[d] = +$('#' + key(d)).value || 0; });
-      const saved = await api('/settings/toolbudgets', { method: 'PUT', body: JSON.stringify({ budgets: payload }) });
-      state.boot.toolBudgets = saved;
-      toast('Tool budgets saved');
-    };
-  }
+  // (The manual "tool pool" and "tool budget by department" cards were removed —
+  // tool cost is now the real per-department tool spend apportioned by actual revenue.)
 
   // outsourcing options (job types) — Super can add / remove
   state.jobTypesEdit = (s.jobTypes || []).slice();
