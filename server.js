@@ -897,6 +897,10 @@ app.get('/api/dashboard', auth, (req, res) => {
   const rateOfCat = (cat) => cat === 'Senior' ? catRates.sr : cat === 'Junior' ? catRates.jr : catRates.mid;
   const resByClient = {};
   const resByPerson = {};
+  // #2 (user, 2026-09-14): utilisation = actual hours ÷ the resource's AVAILABLE time
+  // in the months they actually worked (monthly cap × count of distinct months with
+  // actual bookings) — not divided by every month in the system. Track those months.
+  const personActualMonths = {};
   // #9 (user, 2026-09-14): resources broken down BY DEPARTMENT — each department with
   // the people who booked hours in it (plan vs actual), so a report can be segregated
   // department-wise. Keyed by department (account wing) then by person.
@@ -937,24 +941,29 @@ app.get('/api/dashboard', auth, (req, res) => {
       bag.actualHours += h; bag.actualCost += h * rateOfCat(a ? categoryOf(a) : 'Middle');
       bumpPerson(Number(x.id), 'actualHours', h);
       bumpDeptPerson(dept, Number(x.id), 'actualHours', h);
+      if (h > 0) (personActualMonths[Number(x.id)] = personActualMonths[Number(x.id)] || new Set()).add(e.month);
     }
   }
   const resourceByClient = Object.values(resByClient)
     .filter((r) => r.planHours || r.actualHours)
     .map((r) => ({ ...r, hoursVariance: r.actualHours - r.planHours, costVariance: r.actualCost - r.planCost }))
     .sort((a, b) => b.actualHours - a.actualHours);
-  // % utilisation of each resource's time = actual booked hours ÷ their capacity for
-  // the whole period (monthly hour cap × number of months) (user, 2026-09-01).
+  // % utilisation (user, 2026-09-14) = actual booked hours ÷ the resource's available
+  // time in the months they actually worked (monthly hour cap × count of those months).
   const capPerMonth = compute.num(s.assumptions.resourceMonthlyHours) || 180;
-  const capTotal = capPerMonth * (Array.isArray(s.months) ? s.months.length : 0);
   const resourceByPerson = Object.values(resByPerson)
     .filter((r) => r.planHours || r.actualHours)
-    .map((r) => ({
-      ...r,
-      hoursVariance: r.actualHours - r.planHours,
-      capacity: capTotal,
-      utilisation: capTotal ? r.actualHours / capTotal : 0,
-    }))
+    .map((r) => {
+      const monthsWorked = (personActualMonths[r.id] && personActualMonths[r.id].size) || 0;
+      const capacity = capPerMonth * monthsWorked;
+      return {
+        ...r,
+        hoursVariance: r.actualHours - r.planHours,
+        monthsWorked,
+        capacity,
+        utilisation: capacity ? r.actualHours / capacity : 0,
+      };
+    })
     .sort((a, b) => b.actualHours - a.actualHours);
 
   // #9 — flatten the by-department map: each department with its people, both sorted
