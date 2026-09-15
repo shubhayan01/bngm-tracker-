@@ -625,6 +625,65 @@ function emptyEntry(accountId, month) {
   };
 }
 
+// ---------- tool-cost apportioning (user, 2026-09-15) ----------
+// The "tool cost" charged to a client comes from the real Tools list, per department,
+// split across that department's clients by their ACTUAL revenue share for the month.
+// e.g. a department with tools costing ₹100k/mo and clients A=50%, E=20% of the
+// department's actual revenue → A bears ₹50k, E bears ₹20k of the tool cost.
+function toolMonthKeyOrder(dateStr) {
+  const m = /^(\d{4})-(\d{2})/.exec(String(dateStr || ''));
+  return m ? Number(m[1]) * 12 + (Number(m[2]) - 1) : null;
+}
+function toolActiveInMonth(t, monthKey) {
+  const mo = monthOrder(monthKey);
+  if (mo === Infinity) return t.active !== false;
+  const startMo = toolMonthKeyOrder(t.startDate);
+  if (startMo != null && startMo > mo) return false;        // started after this month
+  const stopMo = toolMonthKeyOrder(t.stopDate);
+  if (stopMo != null && stopMo < mo) return false;          // stopped before this month
+  return true;
+}
+// Total monthly tool cost (INR) assigned to a department in a given month.
+function deptToolMonthlyINR(dept, monthKey) {
+  if (!dept) return 0;
+  const rate = fx.currentRate();
+  const toINR = (amt, cur) => cur === 'INR' ? compute.num(amt) : compute.num(amt) * rate;
+  let sum = 0;
+  for (const t of (settings().tools || [])) {
+    if (t.active === false || !toolActiveInMonth(t, monthKey)) continue;
+    if (t.common && t.deptCosts && t.deptCosts[dept] != null) {
+      sum += toINR(t.deptCosts[dept], t.currency);
+    } else if (!t.common && t.department === dept) {
+      const q = Math.max(1, compute.num(t.quantity) || 1);
+      sum += toINR(t.cost, t.currency) * q;
+    }
+  }
+  return sum;
+}
+// Sum of ACTUAL revenue per department+month, over the given entries.
+function deptActualRevMap(entries) {
+  const accById = Object.fromEntries(db.get().accounts.map((a) => [a.id, a]));
+  const m = {};
+  for (const e of entries) {
+    const dept = (accById[e.accountId] && accById[e.accountId].wing) || '';
+    if (!dept) continue;
+    m[dept + '::' + e.month] = (m[dept + '::' + e.month] || 0) + compute.num(e.revActual);
+  }
+  return m;
+}
+// This entry's share of its department's monthly tool cost (by actual revenue).
+function apportionedToolShare(entry, revMap) {
+  const acc = db.get().accounts.find((a) => a.id === entry.accountId);
+  const dept = (acc && acc.wing) || '';
+  if (!dept) return 0;
+  const cost = deptToolMonthlyINR(dept, entry.month);
+  if (cost <= 0) return 0;
+  const map = revMap || deptActualRevMap(db.get().entries);
+  const deptRev = map[dept + '::' + entry.month] || 0;
+  if (deptRev <= 0) return 0;
+  return cost * (compute.num(entry.revActual) / deptRev);
+}
+
 function computeFor(entry, mode = 'auto') {
   const s = settings();
   const totals = monthTotals(mode);
@@ -632,6 +691,7 @@ function computeFor(entry, mode = 'auto') {
     assumptions: s.assumptions,
     toolPoolForMonth: (s.toolPool && s.toolPool[entry.month]) || 0,
     totalMonthRevenue: totals[entry.month] || 0,
+    toolShare: apportionedToolShare(entry),
     mode,
   });
 }
@@ -746,6 +806,8 @@ app.get('/api/dashboard', auth, (req, res) => {
   const visIds = new Set(scopedAccounts(req).map((a) => a.id));
   const accById = Object.fromEntries(store.accounts.map((a) => [a.id, a]));
   const totals = monthTotals(mode);
+  // Tool cost apportioned per department by ACTUAL revenue share (user, 2026-09-15).
+  const toolRevMap = deptActualRevMap(store.entries.filter((e) => visIds.has(e.accountId)));
 
   // enrich every visible entry with its computation
   const rows = store.entries
@@ -755,6 +817,7 @@ app.get('/api/dashboard', auth, (req, res) => {
         assumptions: s.assumptions,
         toolPoolForMonth: (s.toolPool && s.toolPool[e.month]) || 0,
         totalMonthRevenue: totals[e.month] || 0,
+        toolShare: apportionedToolShare(e, toolRevMap),
         mode,
       });
       return { e, c, acc: accById[e.accountId] };
@@ -812,6 +875,7 @@ app.get('/api/dashboard', auth, (req, res) => {
           assumptions: s.assumptions,
           toolPoolForMonth: (s.toolPool && s.toolPool[e.month]) || 0,
           totalMonthRevenue: tot[e.month] || 0,
+          toolShare: apportionedToolShare(e, toolRevMap),
           mode: mm,
         }),
       }));

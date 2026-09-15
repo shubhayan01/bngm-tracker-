@@ -62,4 +62,8 @@ async function getRate(force = false) {
 // the first request arrives. Never throws.
 function warm() { getRate().catch(() => {}); }
 
-module.exports = { getRate, warm, FALLBACK };
+// Synchronous access to the last known rate (cached / fallback) — for cost maths
+// that can't await. Kept warm by getRate()/warm().
+function currentRate() { return cache.rate || FALLBACK; }
+
+module.exports = { getRate, warm, currentRate, FALLBACK };

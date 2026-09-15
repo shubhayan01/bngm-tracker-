@@ -73,14 +73,18 @@ function statusOf(gm, hasRevenue, a) {
 // Compute one account+month costing.
 // totalMonthRevenue is the sum across ALL accounts for that month (for tool apportioning).
 function computeEntry(entry, opts) {
-  const { assumptions: a, toolPoolForMonth = 0, totalMonthRevenue = 0, mode = 'auto' } = opts;
+  const { assumptions: a, toolPoolForMonth = 0, totalMonthRevenue = 0, mode = 'auto', toolShare: toolShareOverride } = opts;
   const revenue = entryRevenue(entry, mode);
   const { sr, mid, jr } = entryHours(entry, mode);
   const r = rates(a);
   const manpower = sr * r.sr + mid * r.mid + jr * r.jr;
   const outsourcing = outsourcingTotal(entry, mode);
-  const toolShare =
-    totalMonthRevenue > 0 ? (revenue / totalMonthRevenue) * num(toolPoolForMonth) : 0;
+  // Tool share: when the caller passes an explicit `toolShare` (the real per-department
+  // tool cost apportioned by each client's ACTUAL revenue share — user, 2026-09-15) we
+  // use it; otherwise fall back to the legacy manual tool-pool apportioning.
+  const toolShare = toolShareOverride != null
+    ? num(toolShareOverride)
+    : (totalMonthRevenue > 0 ? (revenue / totalMonthRevenue) * num(toolPoolForMonth) : 0);
   const totalCost = manpower + outsourcing + toolShare;
   const grossProfit = revenue - totalCost;
   const gm = revenue > 0 ? grossProfit / revenue : 0;
