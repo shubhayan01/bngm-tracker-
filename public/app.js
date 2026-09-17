@@ -484,6 +484,7 @@ function loadBlankEntry() {
   entry.usageOther = {};
   entry.toolDeptMonthly = deptToolMonthlyClient(entry.pendingWing); // approx until first save
   entry.deptActualRevOther = 0;
+  entry.resTouched = {}; // per-mode: did the user add/edit/remove resources this session?
   normalizeEntryData(entry.data);
   renderEntryBody();
 }
@@ -514,6 +515,7 @@ async function loadEntry() {
   entry.usageOther = r.usageOther || {}; // hours booked on OTHER clients this month, per resource id
   entry.toolDeptMonthly = r.toolDeptMonthly || 0;      // this dept's monthly tool cost (₹)
   entry.deptActualRevOther = r.deptActualRevOther || 0; // other clients' actual revenue in this dept+month
+  entry.resTouched = {}; // per-mode: did the user add/edit/remove resources this session?
   normalizeEntryData(entry.data);
   renderEntryBody();
 }
@@ -543,6 +545,9 @@ function availLabel(usedElsewhere, current, cap) {
 }
 
 // ---- resource helpers (per-employee hours for the current mode) ----
+// Remember that the user changed the resource list for the current mode, so saveEntry
+// sends the (possibly empty) array and a full removal actually sticks (user, 2026-09-17).
+function markResTouched() { (entry.resTouched = entry.resTouched || {})[entry.mode] = true; }
 function resArr() { entry.data[F().res] = entry.data[F().res] || []; return entry.data[F().res]; }
 function resHours(id) { const r = resArr().find((x) => Number(x.id) === id); return r ? r.hours : 0; }
 function setRes(id, hours) {
@@ -657,6 +662,7 @@ function renderResRows() {
     let v = Number(inp.value) || 0;
     if (v < 0) v = 0;
     if (v > maxForThis) { v = maxForThis; inp.value = v; toast(`Only ${maxForThis} hr free for this resource in ${entry.month}`); }
+    markResTouched();
     setRes(id, v);
     const row = inp.closest('.res-row');
     const lbl = row && row.querySelector('.res-avail');
@@ -667,6 +673,7 @@ function renderResRows() {
   $$('.res-asana', cont).forEach((b) => (b.onclick = (ev) => { ev.preventDefault(); openAsana(Number(b.dataset.id)); }));
   $$('.res-del', cont).forEach((b) => (b.onclick = () => {
     const id = Number(b.dataset.id);
+    markResTouched();
     setRes(id, 0);
     if (entry.picked) entry.picked.delete(id);
     renderResRows();
@@ -708,6 +715,7 @@ function wireResSearch() {
     const id = Number(m.dataset.id);
     if (!entry.picked) entry.picked = new Set();
     entry.picked.add(id);
+    markResTouched();
     inp.value = ''; close();
     renderResRows(); renderPreview();
   };
@@ -835,13 +843,19 @@ function renderOutsourcing() {
   const key = F().out;
   const arr = entry.data[key] || [];
   if (!arr.length) { list.innerHTML = '<p class="muted" style="margin:4px 0">None added.</p>'; return; }
+  // Show the job type and the amount as an EDITABLE ₹ field so the cost is always
+  // visible and can be corrected in place (user, 2026-09-17).
   list.innerHTML = arr.map((o, i) => `
     <div class="out-row">
-      <span>${esc(o.jobType)}</span>
-      <span class="val">${inr(o.cost)}</span>
+      <span class="out-job">${esc(o.jobType)}</span>
+      <span class="out-amt">₹ <input type="number" min="0" step="1" class="out-cost" data-i="${i}" value="${Number(o.cost) || 0}" aria-label="Outsourcing cost for ${esc(o.jobType)}" /></span>
       <button type="button" class="btn btn-sm btn-danger out-del" data-i="${i}">✕</button>
     </div>`).join('');
-  $$('.out-del').forEach((b) => (b.onclick = () => {
+  $$('.out-cost', list).forEach((inp) => (inp.oninput = () => {
+    const row = (entry.data[key] || [])[Number(inp.dataset.i)];
+    if (row) { row.cost = Number(inp.value) || 0; renderPreview(); }
+  }));
+  $$('.out-del', list).forEach((b) => (b.onclick = () => {
     (entry.data[key] || []).splice(Number(b.dataset.i), 1);
     renderOutsourcing(); renderPreview();
   }));
@@ -871,7 +885,10 @@ async function saveEntry() {
       [f.out]: entry.data[f.out] || [],
       [f.notes]: entry.data[f.notes] || '',
     };
-    if ((entry.data[f.res] || []).length) payload[f.res] = entry.data[f.res];
+    // Send the resources array when it has rows OR the user cleared it this session, so a
+    // full removal via the ✕ button persists instead of leaving the old list (2026-09-17).
+    if ((entry.data[f.res] || []).length || (entry.resTouched && entry.resTouched[entry.mode]))
+      payload[f.res] = entry.data[f.res] || [];
     const acc = state.boot.accounts.find((a) => a.id === entry.accountId);
     if (acc && acc.wing === 'Content Creation') payload[f.wc] = Number(entry.data[f.wc]) || 0;
     const r = await api('/entry', { method: 'PUT', body: JSON.stringify(payload) });
@@ -1057,9 +1074,12 @@ function downloadActiveReportCsv() {
 
 async function loadDashboard() {
   const mode = ($('#dashMode') && $('#dashMode').value) || 'auto';
-  const d = await api(withDept('/dashboard?mode=' + mode));
+  const sel = state.dashMonths || [];
+  const q = '/dashboard?mode=' + mode + (sel.length ? '&months=' + encodeURIComponent(sel.join(',')) : '');
+  const d = await api(withDept(q));
   state.dash = d;
-  renderKpis(d.ytd);                       // YTD portfolio KPIs up top
+  setupDashMonths(d.monthsWithData || []);  // global month filter (applies to every report)
+  renderKpis(d.ytd);                       // portfolio KPIs (respect the month filter)
   renderMonthly(d.monthly);
   setupPlanActual(d.comparison, d.comparisonYtd); // Plan vs Actual w/ built-in month select
   setupClientCompare(d.comparisonByClient); // Plan vs Actual per customer
@@ -1068,6 +1088,32 @@ async function loadDashboard() {
   renderWings(d.wingSummary);
   setupRanking(d.ranking);
   wireReportFilter();                      // show one report at a time
+}
+
+// ---- global month filter (user, 2026-09-17) ----
+// One multi-select filter above every report. Ticking months re-fetches the dashboard
+// with `?months=` so KPIs, monthly snapshot, plan-vs-actual, customers, resources,
+// tools and ranking all recompute for exactly those months. Only months that carry
+// data are ever offered, so stale/empty catalogue months never appear.
+function setupDashMonths(months) {
+  const box = $('#dashMonths');
+  if (!box) return;
+  // Drop any previously-selected month that no longer has data.
+  state.dashMonths = (state.dashMonths || []).filter((m) => months.includes(m));
+  const on = new Set(state.dashMonths);
+  box.innerHTML = months.length
+    ? months.map((m) => `<label class="mp-chip ${on.has(m) ? 'mp-on' : ''}"><input type="checkbox" value="${m}" ${on.has(m) ? 'checked' : ''}/> ${m}</label>`).join('')
+    : '<span class="muted small">No data yet.</span>';
+  $$('#dashMonths input[type=checkbox]').forEach((cb) => (cb.onchange = () => {
+    state.dashMonths = $$('#dashMonths input:checked').map((c) => c.value);
+    loadDashboard();
+  }));
+  const allBtn = $('#dashMonthsAll');
+  if (allBtn) allBtn.onclick = () => { if (!(state.dashMonths || []).length) return; state.dashMonths = []; loadDashboard(); };
+  const lbl = $('#dashMonthsLabel');
+  if (lbl) lbl.textContent = state.dashMonths.length
+    ? `${state.dashMonths.length} of ${months.length} months`
+    : (months.length ? `all ${months.length} months` : '');
 }
 
 // ---- report picker (user, 2026-08-26) ----
@@ -1089,6 +1135,8 @@ function wireReportFilter() {
 function openDetailTab(type, key) {
   let url = `?view=detail&type=${encodeURIComponent(type)}&key=${encodeURIComponent(key)}`;
   if (state.activeDept) url += `&dept=${encodeURIComponent(state.activeDept)}`;
+  // Carry the current month selection so a client drill-down matches the report scope.
+  if ((state.dashMonths || []).length) url += `&months=${encodeURIComponent(state.dashMonths.join(','))}`;
   window.open(url, '_blank', 'noopener');
 }
 // Attributes that turn a <tr> into a clickable link to the drill-down detail tab.
@@ -1142,35 +1190,26 @@ function sumComparison(rows) {
 }
 
 function setupPlanActual(rows, ytd) {
+  // Month scoping is handled by the global Months filter above; the rows passed here are
+  // already limited to the selection (user, 2026-09-17).
   state.cmpRows = rows || [];
   state.cmpYtd = ytd;
-  const pick = $('#cmpMonthsPick');
-  if (pick) {
-    const prev = new Set(state.cmpMonths || []);
-    pick.innerHTML = state.cmpRows.map((r) => {
-      const has = r.planRevenue || r.actualRevenue;
-      return `<label class="mp-chip ${has ? '' : 'mp-empty'}"><input type="checkbox" value="${r.month}" ${prev.has(r.month) ? 'checked' : ''}/> ${r.month}</label>`;
-    }).join('');
-    $$('#cmpMonthsPick input[type=checkbox]').forEach((cb) => (cb.onchange = () => {
-      state.cmpMonths = $$('#cmpMonthsPick input:checked').map((c) => c.value);
-      renderPlanActual();
-    }));
-    const clear = $('#cmpMonthsClear');
-    if (clear) clear.onclick = () => { state.cmpMonths = []; setupPlanActual(state.cmpRows, state.cmpYtd); };
-  }
   renderPlanActual();
 }
 
 function renderPlanActual() {
   const rows = state.cmpRows || [];
-  const sel = state.cmpMonths || [];
-  const chosen = sel.length ? rows.filter((r) => sel.includes(r.month)) : rows;
+  // Month scoping now lives in the global Months filter above every report, so the rows
+  // handed here are already limited to the selection — total them all (user, 2026-09-17).
+  const sel = [];
+  const chosen = rows;
   const tot = sumComparison(chosen);
 
+  const gsel = state.dashMonths || [];
   const scopeEl = $('#cmpScope');
-  if (scopeEl) scopeEl.textContent = sel.length
-    ? `Totals for ${sel.length} selected month${sel.length > 1 ? 's' : ''}: ${sel.join(', ')}`
-    : 'Totals for the full year (all months) — tick months above to narrow the calculation.';
+  if (scopeEl) scopeEl.textContent = gsel.length
+    ? `Totals for ${gsel.length} selected month${gsel.length > 1 ? 's' : ''}: ${gsel.join(', ')}`
+    : 'Totals across all months with data — use the Months filter above to narrow every report.';
 
   // KPI strip (reflects the current selection)
   const k = (label, plan, actual, vr, asPct) => {
@@ -1337,32 +1376,89 @@ function renderResources() {
   } else {
     const rows = (state.resByPerson || []).filter((r) => !q || String(r.name || '').toLowerCase().includes(q));
     const showCat = isSuper();
-    // % utilisation = actual booked hours ÷ each person's total capacity for the year
-    // (hours/month × number of months), from the server (user, 2026-09-01).
-    const head = ['Resource'].concat(showCat ? ['Category'] : []).concat(['Plan hrs', 'Actual hrs', 'Δ hrs', 'Utilisation', 'Asana']);
+    // Per-resource load for the months in view (user, 2026-09-17): capacity = monthly
+    // cap × months on screen; benching = idle capacity; hours-left = remaining bookable
+    // capacity; benching % = idle ÷ capacity. Click a row for a full drill-down.
+    const hoursLeftCell = (v) => `<td style="color:var(--${v < 0 ? 'red' : 'muted'})">${v < 0 ? '−' : ''}${hrsFmt(Math.abs(v))}</td>`;
+    const head = ['Resource'].concat(showCat ? ['Category'] : [])
+      .concat(['Plan hrs', 'Actual hrs', 'Capacity', 'Utilisation', 'Hrs left', 'Benching hrs', 'Benching %', 'Projects', 'Asana']);
     const cols = head.length;
     let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l sticky-col' : (i === 1 && showCat ? 'l' : '')}">${h}</th>`).join('') + '</tr></thead><tbody>';
     if (!rows.length) html += `<tr><td colspan="${cols}" class="l muted">${(state.resByPerson || []).length ? 'No resources match the filter.' : 'No resource hours logged yet.'}</td></tr>`;
-    let ph = 0, ah = 0, cap = 0;
-    rows.forEach((r) => {
-      ph += r.planHours; ah += r.actualHours; cap += (Number(r.capacity) || 0);
+    let ph = 0, ah = 0, cap = 0, bench = 0;
+    rows.forEach((r, idx) => {
+      ph += r.planHours; ah += r.actualHours; cap += (Number(r.capacity) || 0); bench += (Number(r.benchingHours) || 0);
       const catCell = showCat
         ? `<td class="l">${r.category ? `<span class="cat-tag cat-${String(r.category).toLowerCase()}">${esc(r.category)}</span>` : ''}</td>`
         : '';
-      html += `<tr><td class="l sticky-col">${esc(r.name)}</td>${catCell}` +
-        `<td>${hrsFmt(r.planHours)}</td><td>${hrsFmt(r.actualHours)}</td>${varHrsCell(r.hoursVariance)}` +
+      html += `<tr class="res-person-row" data-idx="${idx}" title="Click for this resource's full breakdown"><td class="l sticky-col">${esc(r.name)}</td>${catCell}` +
+        `<td>${hrsFmt(r.planHours)}</td><td>${hrsFmt(r.actualHours)}</td><td>${hrsFmt(r.capacity)}</td>` +
         `<td>${utilCell(r.utilisation)}</td>` +
+        hoursLeftCell(Number(r.hoursLeft) || 0) +
+        `<td>${hrsFmt(r.benchingHours)}</td><td>${pct(r.benchingPct)}</td>` +
+        `<td>${r.projectCount || 0}</td>` +
         `<td><button type="button" class="btn btn-sm btn-ghost res-asana-rep" data-email="${esc(r.email || r.name)}" title="Open Asana assignments for ${esc(r.name)}">📋 Asana</button></td></tr>`;
     });
     if (rows.length) {
       const catTot = showCat ? '<td class="l"></td>' : '';
+      const left = cap - ah;
       html += `<tr class="row-total"><td class="l sticky-col"><b>Total</b></td>${catTot}` +
-        `<td>${hrsFmt(ph)}</td><td>${hrsFmt(ah)}</td>${varHrsCell(ah - ph)}` +
-        `<td>${utilCell(cap ? ah / cap : 0)}</td><td></td></tr>`;
+        `<td>${hrsFmt(ph)}</td><td>${hrsFmt(ah)}</td><td>${hrsFmt(cap)}</td>` +
+        `<td>${utilCell(cap ? ah / cap : 0)}</td>` +
+        hoursLeftCell(left) +
+        `<td>${hrsFmt(bench)}</td><td>${pct(cap ? bench / cap : 0)}</td><td></td><td></td></tr>`;
     }
     table.innerHTML = html + '</tbody>';
-    $$('.res-asana-rep', table).forEach((b) => (b.onclick = () => window.open(asanaUrl(b.dataset.email), '_blank', 'noopener')));
+    // Row click → drill-down modal; the Asana button opens Asana without triggering it.
+    $$('.res-person-row', table).forEach((tr) => (tr.onclick = (ev) => {
+      if (ev.target.closest('.res-asana-rep')) return;
+      openResourceDetail(rows[Number(tr.dataset.idx)]);
+    }));
+    $$('.res-asana-rep', table).forEach((b) => (b.onclick = (ev) => { ev.stopPropagation(); window.open(asanaUrl(b.dataset.email), '_blank', 'noopener'); }));
   }
+}
+
+// Resource drill-down (user, 2026-09-17): total hours, utilisation, benching and a
+// per-project breakdown (how many hours on each client), all for the months in view.
+function openResourceDetail(r) {
+  if (!r) return;
+  const projects = r.projectList || [];
+  const monthsNote = (state.dashMonths || []).length
+    ? `${state.dashMonths.length} selected month${state.dashMonths.length > 1 ? 's' : ''}`
+    : 'all months with data';
+  const stat = (label, val) => `<div class="rd-stat"><div class="rd-label">${label}</div><div class="rd-val">${val}</div></div>`;
+  let html = `<p class="muted small">${esc(r.email || '')}${r.category ? ' · ' + esc(r.category) : ''} · scope: ${esc(monthsNote)}</p>`;
+  html += '<div class="rd-stats">' +
+    stat('Actual hours', hrsFmt(r.actualHours)) +
+    stat('Planned hours', hrsFmt(r.planHours)) +
+    stat('Capacity', hrsFmt(r.capacity)) +
+    stat('Utilisation', utilCell(r.utilisation)) +
+    stat('Benching hrs', hrsFmt(r.benchingHours)) +
+    stat('Benching %', pct(r.benchingPct)) +
+    stat('Hours left', hrsFmt(r.hoursLeft)) +
+    stat('Projects', String(r.projectCount || 0)) +
+    stat('Months worked', String(r.monthsWorked || 0)) +
+    '</div>';
+  html += '<h4 style="margin:16px 0 6px">Projects — hours per project</h4>';
+  if (!projects.length) {
+    html += '<p class="muted small">No project hours booked in this scope.</p>';
+  } else {
+    html += '<div class="table-scroll"><table class="data"><thead><tr>' +
+      '<th class="l">Client</th><th class="l">Department</th><th>Plan hrs</th><th>Actual hrs</th><th>Δ hrs</th>' +
+      '</tr></thead><tbody>';
+    projects.forEach((p) => {
+      const v = p.actualHours - p.planHours;
+      const vcol = v <= 0 ? 'var(--green)' : 'var(--red)';
+      const sign = v > 0 ? '+' : (v < 0 ? '−' : '');
+      html += `<tr><td class="l">${esc(p.client)}</td><td class="l">${esc(p.dept || '—')}</td>` +
+        `<td>${hrsFmt(p.planHours)}</td><td>${hrsFmt(p.actualHours)}</td>` +
+        `<td style="color:${vcol}">${sign}${hrsFmt(Math.abs(v))}</td></tr>`;
+    });
+    html += '</tbody></table></div>';
+  }
+  const wrap = el('div', 'res-detail');
+  wrap.innerHTML = html;
+  openModalCustom(`${r.name} — resource summary`, wrap);
 }
 
 // Utilisation cell: green when comfortably loaded, amber when light, red when > 100%
@@ -1506,6 +1602,7 @@ function maybeOpenDetail() {
   const type = p.get('type') === 'client' ? 'client' : 'month';
   const key = p.get('key') || '';
   if (p.get('dept') && state.roleInfo && state.roleInfo.canSwitchDept) state.activeDept = p.get('dept');
+  state.detailMonths = (p.get('months') || '').split(',').map((x) => x.trim()).filter(Boolean);
   switchView('detail');
   loadDetail(type, key);
   return true;
@@ -1517,7 +1614,10 @@ async function loadDetail(type, key) {
   document.title = `${type === 'client' ? 'Client' : 'Month'} · ${key} — BNGM`;
   host.innerHTML = '<p class="muted">Loading…</p>';
   try {
-    const d = await api(withDept(`/detail?type=${encodeURIComponent(type)}&key=${encodeURIComponent(key)}`));
+    const months = (state.detailMonths || []);
+    let path = `/detail?type=${encodeURIComponent(type)}&key=${encodeURIComponent(key)}`;
+    if (months.length) path += `&months=${encodeURIComponent(months.join(','))}`;
+    const d = await api(withDept(path));
     renderDetail(d);
   } catch (e) { host.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
 }

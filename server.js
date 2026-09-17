@@ -757,13 +757,17 @@ app.put('/api/entry', auth, requireWrite, (req, res) => {
     }
     return null;
   };
+  // A resources array is applied whenever the client SENDS it (even empty), so removing
+  // every resource with the ✕ button actually clears them (user, 2026-09-17). The client
+  // only sends the array when the user touched it, so legacy entries that carry only
+  // aggregate srHrs/jrHrs and were saved untouched are still never clobbered.
   let cleanAct = null, cleanPlan = null;
-  if (Array.isArray(b.resourcesActual) && b.resourcesActual.length) {
+  if (Array.isArray(b.resourcesActual)) {
     cleanAct = cleanResources(b.resourcesActual);
     const err = checkCapacity(cleanAct, 'actual');
     if (err) return res.status(400).json({ error: err });
   }
-  if (Array.isArray(b.resourcesPlan) && b.resourcesPlan.length) {
+  if (Array.isArray(b.resourcesPlan)) {
     cleanPlan = cleanResources(b.resourcesPlan);
     const err = checkCapacity(cleanPlan, 'planned');
     if (err) return res.status(400).json({ error: err });
@@ -825,12 +829,29 @@ app.get('/api/dashboard', auth, (req, res) => {
   const visIds = new Set(scopedAccounts(req).map((a) => a.id));
   const accById = Object.fromEntries(store.accounts.map((a) => [a.id, a]));
   const totals = monthTotals(mode);
+
+  // ---- Month filter (user, 2026-09-17) ----
+  // `?months=Aug-26,Sep-26` limits EVERY report to those months; absent = all. Only
+  // months that actually carry data are ever surfaced, so stale/empty catalogue months
+  // (e.g. an "Aug-25" that was registered once and never used) never clutter reports.
+  const monthsParam = String(req.query.months || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const monthFilter = monthsParam.length ? new Set(monthsParam.filter(validMonthKey)) : null;
+  const passMonth = (e) => !monthFilter || monthFilter.has(e.month);
+  const hasData = (e) => compute.num(e.revPlanned) || compute.num(e.revActual)
+    || (e.resourcesPlan || []).length || (e.resourcesActual || []).length
+    || (e.outsourcingPlan || []).length || (e.outsourcingActual || []).length || (e.outsourcing || []).length;
+  const monthsWithData = [...new Set(store.entries.filter((e) => visIds.has(e.accountId) && hasData(e)).map((e) => e.month))]
+    .sort((a, b) => monthOrder(a) - monthOrder(b));
+  // The months the tables actually render: the filter intersected with data months (so
+  // a filtered-but-empty month is dropped too), else every data month.
+  const displayMonths = monthFilter ? monthsWithData.filter((m) => monthFilter.has(m)) : monthsWithData.slice();
+
   // Tool cost apportioned per department by ACTUAL revenue share (user, 2026-09-15).
-  const toolRevMap = deptActualRevMap(store.entries.filter((e) => visIds.has(e.accountId)));
+  const toolRevMap = deptActualRevMap(store.entries.filter((e) => visIds.has(e.accountId) && passMonth(e)));
 
   // enrich every visible entry with its computation
   const rows = store.entries
-    .filter((e) => visIds.has(e.accountId))
+    .filter((e) => visIds.has(e.accountId) && passMonth(e))
     .map((e) => {
       const c = compute.computeEntry(e, {
         assumptions: s.assumptions,
@@ -842,8 +863,8 @@ app.get('/api/dashboard', auth, (req, res) => {
       return { e, c, acc: accById[e.accountId] };
     });
 
-  // 1) Monthly portfolio snapshot
-  const monthly = s.months.map((m) => {
+  // 1) Monthly portfolio snapshot (only months with data, honouring the filter)
+  const monthly = displayMonths.map((m) => {
     const mr = rows.filter((r) => r.e.month === m);
     const agg = aggregate(mr, s.assumptions);
     return { month: m, ...agg };
@@ -886,7 +907,7 @@ app.get('/api/dashboard', auth, (req, res) => {
   const rowsFor = (mm) => {
     const tot = monthTotals(mm);
     return store.entries
-      .filter((e) => visIds.has(e.accountId))
+      .filter((e) => visIds.has(e.accountId) && passMonth(e))
       .map((e) => ({
         e,
         acc: accById[e.accountId],
@@ -906,7 +927,7 @@ app.get('/api/dashboard', auth, (req, res) => {
   const wcByMonth = {};
   const wcByClient = {};
   for (const e of store.entries) {
-    if (!visIds.has(e.accountId)) continue;
+    if (!visIds.has(e.accountId) || !passMonth(e)) continue;
     const wp = compute.num(e.wcPlanned), wd = compute.num(e.wcDelivered);
     if (!wp && !wd) continue;
     (wcByMonth[e.month] = wcByMonth[e.month] || { planWc: 0, actualWc: 0 });
@@ -915,7 +936,7 @@ app.get('/api/dashboard', auth, (req, res) => {
     (wcByClient[nm] = wcByClient[nm] || { planWc: 0, actualWc: 0 });
     wcByClient[nm].planWc += wp; wcByClient[nm].actualWc += wd;
   }
-  const comparison = s.months.map((m) => {
+  const comparison = displayMonths.map((m) => {
     const p = aggregate(planRows.filter((r) => r.e.month === m), s.assumptions);
     const a = aggregate(actualRows.filter((r) => r.e.month === m), s.assumptions);
     const wc = wcByMonth[m] || { planWc: 0, actualWc: 0 };
@@ -988,12 +1009,20 @@ app.get('/api/dashboard', auth, (req, res) => {
   // the people who booked hours in it (plan vs actual), so a report can be segregated
   // department-wise. Keyed by department (account wing) then by person.
   const resByDept = {};
-  const bumpPerson = (id, key, hrs) => {
+  const bumpPerson = (id, key, hrs, acc) => {
     const a = assocByIdD[id];
     const p = resByPerson[id] || (resByPerson[id] = {
-      id, name: a ? (a.fullName || a.name) : ('#' + id), email: a ? a.name : '', category: a ? categoryOf(a) : '', planHours: 0, actualHours: 0,
+      id, name: a ? (a.fullName || a.name) : ('#' + id), email: a ? a.name : '', category: a ? categoryOf(a) : '', planHours: 0, actualHours: 0, projects: {},
     });
     p[key] += hrs;
+    // Per-project (per client × department) split so a resource drill-down can show
+    // how their hours are spread across the projects they work on (user, 2026-09-17).
+    if (acc) {
+      const pr = p.projects[acc.id] || (p.projects[acc.id] = {
+        accountId: acc.id, client: acc.name || '—', dept: acc.wing || '', planHours: 0, actualHours: 0,
+      });
+      pr[key] += hrs;
+    }
   };
   const bumpDeptPerson = (dept, id, key, hrs) => {
     if (!dept) return;
@@ -1006,7 +1035,7 @@ app.get('/api/dashboard', auth, (req, res) => {
     p[key] += hrs;
   };
   for (const e of store.entries) {
-    if (!visIds.has(e.accountId)) continue;
+    if (!visIds.has(e.accountId) || !passMonth(e)) continue;
     const acc = accById[e.accountId];
     const cname = (acc && acc.name) || '—';
     const dept = (acc && acc.wing) || '';
@@ -1016,13 +1045,13 @@ app.get('/api/dashboard', auth, (req, res) => {
     for (const x of (e.resourcesPlan || [])) {
       const a = assocByIdD[x.id]; const h = compute.num(x.hours);
       bag.planHours += h; bag.planCost += h * rateOfCat(a ? categoryOf(a) : 'Middle');
-      bumpPerson(Number(x.id), 'planHours', h);
+      bumpPerson(Number(x.id), 'planHours', h, acc);
       bumpDeptPerson(dept, Number(x.id), 'planHours', h);
     }
     for (const x of (e.resourcesActual || [])) {
       const a = assocByIdD[x.id]; const h = compute.num(x.hours);
       bag.actualHours += h; bag.actualCost += h * rateOfCat(a ? categoryOf(a) : 'Middle');
-      bumpPerson(Number(x.id), 'actualHours', h);
+      bumpPerson(Number(x.id), 'actualHours', h, acc);
       bumpDeptPerson(dept, Number(x.id), 'actualHours', h);
       if (h > 0) (personActualMonths[Number(x.id)] = personActualMonths[Number(x.id)] || new Set()).add(e.month);
     }
@@ -1031,20 +1060,34 @@ app.get('/api/dashboard', auth, (req, res) => {
     .filter((r) => r.planHours || r.actualHours)
     .map((r) => ({ ...r, hoursVariance: r.actualHours - r.planHours, costVariance: r.actualCost - r.planCost }))
     .sort((a, b) => b.actualHours - a.actualHours);
-  // % utilisation (user, 2026-09-14) = actual booked hours ÷ the resource's available
-  // time in the months they actually worked (monthly hour cap × count of those months).
+  // Benching & utilisation (user, 2026-09-17). Capacity for the period in view =
+  // monthly hour cap × the number of months on screen (the filter selection, else every
+  // month that carries data). Benching hours = idle capacity; hours-left = remaining
+  // bookable capacity (negative when over-booked); benching % = idle ÷ capacity.
   const capPerMonth = compute.num(s.assumptions.resourceMonthlyHours) || 180;
+  const monthsInScope = displayMonths.length;
+  const capScope = capPerMonth * monthsInScope;
   const resourceByPerson = Object.values(resByPerson)
     .filter((r) => r.planHours || r.actualHours)
     .map((r) => {
       const monthsWorked = (personActualMonths[r.id] && personActualMonths[r.id].size) || 0;
-      const capacity = capPerMonth * monthsWorked;
+      const capacity = capScope;
+      const hoursLeft = capacity - r.actualHours;
+      const benchingHours = Math.max(0, hoursLeft);
+      const projectList = Object.values(r.projects || {})
+        .filter((p) => p.planHours || p.actualHours)
+        .map((p) => ({ ...p, hoursVariance: p.actualHours - p.planHours }))
+        .sort((a, b) => b.actualHours - a.actualHours);
       return {
-        ...r,
+        id: r.id, name: r.name, email: r.email, category: r.category,
+        planHours: r.planHours, actualHours: r.actualHours,
         hoursVariance: r.actualHours - r.planHours,
-        monthsWorked,
-        capacity,
+        monthsWorked, monthsInScope, capacity,
+        hoursLeft, benchingHours,
         utilisation: capacity ? r.actualHours / capacity : 0,
+        benchingPct: capacity ? benchingHours / capacity : 0,
+        projectList,
+        projectCount: projectList.length,
       };
     })
     .sort((a, b) => b.actualHours - a.actualHours);
@@ -1066,7 +1109,8 @@ app.get('/api/dashboard', auth, (req, res) => {
     .sort((a, b) => b.actualHours - a.actualHours);
 
   res.json({
-    mode, months: s.months, ytd, monthly, wingSummary, ranking,
+    mode, months: s.months, monthsWithData, selectedMonths: displayMonths,
+    ytd, monthly, wingSummary, ranking,
     comparison, comparisonByClient, comparisonYtd, resourceByClient, resourceByPerson, resourceByDept,
   });
 });
@@ -1080,6 +1124,10 @@ app.get('/api/detail', auth, (req, res) => {
   const store = db.get();
   const type = req.query.type === 'client' ? 'client' : 'month';
   const key = String(req.query.key || '');
+  // Same month filter as the dashboard (user, 2026-09-17) — a client drill-down honours
+  // whatever months are selected in Reports; a month drill-down is already one month.
+  const monthsParam = String(req.query.months || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const monthFilter = monthsParam.length ? new Set(monthsParam.filter(validMonthKey)) : null;
   const visIds = new Set(scopedAccounts(req).map((a) => a.id));
   const accById = Object.fromEntries(store.accounts.map((a) => [a.id, a]));
   const assocById = Object.fromEntries((store.associates || []).map((a) => [a.id, a]));
@@ -1122,7 +1170,8 @@ app.get('/api/detail', auth, (req, res) => {
     items.sort((a, b) => String(a.wing).localeCompare(String(b.wing)) || String(a.name).localeCompare(String(b.name)));
   } else {
     items = store.entries
-      .filter((e) => visIds.has(e.accountId) && accById[e.accountId] && String(accById[e.accountId].name).toLowerCase() === key.toLowerCase())
+      .filter((e) => visIds.has(e.accountId) && accById[e.accountId] && String(accById[e.accountId].name).toLowerCase() === key.toLowerCase()
+        && (!monthFilter || monthFilter.has(e.month)))
       .map(detailFor);
     items.sort((a, b) => monthOrder(a.month) - monthOrder(b.month) || String(a.wing).localeCompare(String(b.wing)));
   }

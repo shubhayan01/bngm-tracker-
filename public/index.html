@@ -143,6 +143,14 @@
           <button class="rf-pill" data-report="ranking">🏆 Departments &amp; Ranking</button>
         </nav>
 
+        <!-- Month filter — applies to EVERY report below; multi-select. -->
+        <div class="report-monthbar glass">
+          <span class="rmb-label">📅 Months</span>
+          <div id="dashMonths" class="month-pick"></div>
+          <span id="dashMonthsLabel" class="muted small"></span>
+          <button id="dashMonthsAll" class="btn btn-ghost btn-sm">All months</button>
+        </div>
+
         <!-- Overview -->
         <div class="report-block" data-report="overview">
           <h3>Portfolio KPIs (YTD, selected view)</h3>
@@ -155,12 +163,7 @@
         <div class="report-block" data-report="planactual" hidden>
           <div class="view-head">
             <h3 style="margin:0">Plan vs Actual — revenue, cost &amp; margin</h3>
-            <div class="controls">
-              <span class="muted small">Pick months to total — none = full year.</span>
-              <button id="cmpMonthsClear" class="btn btn-ghost btn-sm">All months</button>
-            </div>
           </div>
-          <div id="cmpMonthsPick" class="month-pick"></div>
           <div id="cmpScope" class="muted small" style="margin:-4px 0 10px"></div>
           <div id="cmpKpis" class="cmp-row"></div>
           <div class="table-scroll glass"><table id="cmpTable" class="data"></table></div>

@@ -353,6 +353,9 @@ body.show-usd .usd-hint.usd { display: block; }
 .out-add { display: grid; grid-template-columns: 1fr 120px auto; gap: 10px; }
 .out-row { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; font-size: 13.5px; }
 .out-row .val { font-weight: 700; font-variant-numeric: tabular-nums; }
+.out-row .out-job { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.out-row .out-amt { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-weight: 700; }
+.out-row .out-cost { width: 110px; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
 .entry-actions { display: flex; align-items: center; gap: 14px; padding-top: 6px; border-top: 1px solid var(--line); margin-top: 4px; padding-top: 16px; }
 
 /* ---------- plan vs actual comparison ---------- */
@@ -398,7 +401,22 @@ table.data td .per { font-size: 11px; color: var(--muted); margin-left: 2px; }
 .mp-chip { display: inline-flex; align-items: center; gap: 7px; padding: 7px 13px; border-radius: 20px; border: 1px solid var(--line-strong); background: var(--glass-2); font-size: 12.5px; cursor: pointer; user-select: none; }
 .mp-chip input { width: auto; margin: 0; }
 .mp-chip.mp-empty { opacity: .55; }
+.mp-chip.mp-on { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 16%, transparent); color: var(--text); font-weight: 700; }
 .rank-search { min-width: 190px; }
+
+/* ---------- global report month filter (user, 2026-09-17) ---------- */
+.report-monthbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 14px; border-radius: var(--radius); border: 1px solid var(--line); margin-bottom: 16px; }
+.report-monthbar .rmb-label { font-weight: 800; font-size: 13px; white-space: nowrap; }
+.report-monthbar .month-pick { margin-bottom: 0; flex: 1 1 auto; }
+.report-monthbar #dashMonthsLabel { white-space: nowrap; }
+
+/* ---------- resource drill-down ---------- */
+table.data tbody tr.res-person-row { cursor: pointer; }
+table.data tbody tr.res-person-row:hover { background: color-mix(in srgb, var(--brand) 9%, transparent); }
+.res-detail .rd-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 10px; }
+.res-detail .rd-stat { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px 12px; background: var(--glass-2); }
+.res-detail .rd-label { font-size: 11.5px; color: var(--muted); font-weight: 700; }
+.res-detail .rd-val { font-size: 17px; font-weight: 800; margin-top: 3px; font-variant-numeric: tabular-nums; }
 
 /* ---------- account status ---------- */
 .status-toggle.st-on { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); background: color-mix(in srgb, var(--green) 12%, transparent); }
