@@ -101,6 +101,11 @@ function findEntry(accountId, month) {
 // user picks (key format "Mon-YY", e.g. "Aug-26"); a new key is added to the
 // catalogue on the fly so reports, the tool pool and the plan/actual picker follow.
 const MONTHS3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// The five internal delivery departments an "internal" outsourcing line can name as
+// its provider (user, 2026-09-18). Values are the wing names so the report can credit
+// the provider department directly; the UI shows friendly labels.
+const INTERNAL_PROVIDERS = ['Content Creation', 'Web Dev', 'SEO', 'Performance Mktg', 'SMM'];
 function monthOrder(key) {
   const m = /^([A-Za-z]{3})-(\d{2})$/.exec(String(key || ''));
   if (!m) return Infinity;
@@ -203,6 +208,11 @@ app.get('/api/bootstrap', auth, async (req, res) => {
     // (clients are open to all departments; the department is chosen at entry time).
     clientNames: [...new Set((db.get().accounts || []).map((a) => a.name))].sort((a, b) => String(a).localeCompare(String(b))),
     jobTypes: s.jobTypes,
+    // Internal outsourcing (user, 2026-09-18): the delivery departments an internal
+    // outsourcing line can name as its provider, and the clients Super has flagged as
+    // internal-outsourcing accounts.
+    internalProviders: INTERNAL_PROVIDERS,
+    internalClients: s.internalOutsourcingClients || [],
     tools: scopedTools(req),
     toolBudgets: s.toolBudgets || {},
     helpEnabled: groq.isEnabled(s),
@@ -797,9 +807,21 @@ app.put('/api/entry', auth, requireWrite, (req, res) => {
   // Outsourcing & notes are split Plan vs Actual (user, 2026-08-24). Whichever keys
   // the client sends are applied; the legacy shared `outsourcing`/`notes` are kept in
   // step for back-compat so old readers / entries still cost correctly.
+  // Each line is Internal or External (user, 2026-09-18). Internal lines carry the
+  // provider department (one of INTERNAL_PROVIDERS); External lines keep a job type.
   const cleanOut = (arr) => (Array.isArray(arr) ? arr : [])
-    .filter((o) => o && (o.jobType || o.cost))
-    .map((o) => ({ jobType: String(o.jobType || 'Others'), cost: compute.num(o.cost), vendor: String(o.vendor || '') }));
+    .filter((o) => o && (o.jobType || o.provider || o.cost))
+    .map((o) => {
+      const kind = o.kind === 'internal' ? 'internal' : 'external';
+      const provider = kind === 'internal' && INTERNAL_PROVIDERS.includes(String(o.provider)) ? String(o.provider) : '';
+      return {
+        kind,
+        provider,
+        jobType: String(o.jobType || (kind === 'internal' ? (provider || 'Internal') : 'Others')),
+        cost: compute.num(o.cost),
+        vendor: String(o.vendor || ''),
+      };
+    });
   for (const key of ['outsourcing', 'outsourcingPlan', 'outsourcingActual']) {
     if (Array.isArray(b[key])) entry[key] = cleanOut(b[key]);
   }
@@ -1108,10 +1130,69 @@ app.get('/api/dashboard', auth, (req, res) => {
     .filter((d) => d.planHours || d.actualHours)
     .sort((a, b) => b.actualHours - a.actualHours);
 
+  // 6) Outsourcing report (user, 2026-09-18) — Internal vs External. Internal lines name
+  // a provider department; that cost is MIRRORED as internal-outsourcing income for the
+  // provider (so "the cost equals the other department's internal outsourcing"). This is
+  // a company-wide settlement, so switcher roles compute it across ALL departments;
+  // scoped department logins see only their own entries.
+  const canSeeAllOut = !!(req.roleDef && req.roleDef.canSwitchDept);
+  const outEntries = (canSeeAllOut ? store.entries : store.entries.filter((e) => visIds.has(e.accountId)))
+    .filter((e) => passMonth(e));
+  const internalClients = new Set(s.internalOutsourcingClients || []);
+  const outByDept = {};   // wing -> { extPaid, intPaid, intIncome }
+  const outByProvider = {}; // provider wing -> internal income (from providers view)
+  const outByClient = {};  // client name -> { ext, intPaid, intIncome, internal }
+  const ensureDept = (w) => (outByDept[w] || (outByDept[w] = { dept: w, extPaid: 0, intPaid: 0, intIncome: 0 }));
+  const ensureClient = (n) => (outByClient[n] || (outByClient[n] = { name: n, ext: 0, intPaid: 0, intIncome: 0, internal: internalClients.has(n) }));
+  INTERNAL_PROVIDERS.forEach((w) => { ensureDept(w); outByProvider[w] = 0; });
+  let outExtTotal = 0, outIntTotal = 0;
+  for (const e of outEntries) {
+    const acc = accById[e.accountId];
+    const wing = (acc && acc.wing) || '—';
+    const cname = (acc && acc.name) || '—';
+    for (const o of compute.outsourcingArr(e, mode)) {
+      const cost = compute.num(o.cost);
+      if (!cost) continue;
+      const cb = ensureClient(cname);
+      if (o.kind === 'internal') {
+        outIntTotal += cost;
+        ensureDept(wing).intPaid += cost;
+        cb.intPaid += cost;
+        const prov = INTERNAL_PROVIDERS.includes(o.provider) ? o.provider : '';
+        if (prov) {
+          ensureDept(prov).intIncome += cost;  // mirror to the provider department
+          outByProvider[prov] = (outByProvider[prov] || 0) + cost;
+          cb.intIncome += cost;
+        }
+      } else {
+        outExtTotal += cost;
+        ensureDept(wing).extPaid += cost;
+        cb.ext += cost;
+      }
+    }
+  }
+  const outsourcingByDept = Object.values(outByDept)
+    .map((d) => ({ ...d, net: d.intIncome - d.intPaid, total: d.extPaid + d.intPaid }))
+    .filter((d) => d.extPaid || d.intPaid || d.intIncome)
+    .sort((a, b) => (b.extPaid + b.intPaid + b.intIncome) - (a.extPaid + a.intPaid + a.intIncome));
+  const outsourcingByClient = Object.values(outByClient)
+    .filter((c) => c.ext || c.intPaid)
+    .map((c) => ({ ...c, total: c.ext + c.intPaid }))
+    .sort((a, b) => b.total - a.total);
+  const outsourcingReport = {
+    scope: canSeeAllOut ? 'all' : 'own',
+    providers: INTERNAL_PROVIDERS,
+    byDept: outsourcingByDept,
+    byClient: outsourcingByClient,
+    byProvider: outByProvider,
+    totals: { external: outExtTotal, internal: outIntTotal, grand: outExtTotal + outIntTotal },
+  };
+
   res.json({
     mode, months: s.months, monthsWithData, selectedMonths: displayMonths,
     ytd, monthly, wingSummary, ranking,
     comparison, comparisonByClient, comparisonYtd, resourceByClient, resourceByPerson, resourceByDept,
+    outsourcingReport,
   });
 });
 
@@ -1258,6 +1339,21 @@ app.put('/api/settings/jobtypes', auth, requirePerm('canEditSettings'), (req, re
   if (!list.length) return res.status(400).json({ error: 'Keep at least one outsourcing option' });
   s.jobTypes = list;
   db.save().then(() => res.json(s.jobTypes));
+});
+
+// Super-only: mark / unmark a client (by name) as an internal-outsourcing client
+// (user, 2026-09-18). These are the accounts where one department books an internal
+// outsourcing cost provided by another department; the Outsourcing report flags them.
+app.put('/api/clients/internal', auth, requirePerm('canManageClients'), (req, res) => {
+  const s = settings();
+  const name = String((req.body && req.body.name) || '').trim();
+  if (!name) return res.status(400).json({ error: 'Client name required' });
+  const on = !!(req.body && req.body.on);
+  const list = Array.isArray(s.internalOutsourcingClients) ? s.internalOutsourcingClients : [];
+  const set = new Set(list);
+  if (on) set.add(name); else set.delete(name);
+  s.internalOutsourcingClients = [...set].sort((a, b) => a.localeCompare(b));
+  db.save().then(() => res.json({ internalClients: s.internalOutsourcingClients }));
 });
 
 // Super-only: configure the Groq help bot. Returns only whether a key is set

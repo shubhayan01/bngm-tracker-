@@ -85,7 +85,10 @@
           <div class="entry-panel glass">
             <div class="entry-head">
               <label class="eh-field"><span>Client</span>
-                <select id="e_client"></select>
+                <div class="client-search">
+                  <input id="e_client" type="search" autocomplete="off" placeholder="Search client…" />
+                  <div id="e_clientMatches" class="res-matches hidden"></div>
+                </div>
               </label>
               <label class="eh-field"><span>Department</span>
                 <select id="e_service"></select>
@@ -139,6 +142,7 @@
           <button class="rf-pill" data-report="planactual">🎯 Plan vs Actual</button>
           <button class="rf-pill" data-report="customer">🏢 By Customer</button>
           <button class="rf-pill" data-report="resources">👥 Resources</button>
+          <button class="rf-pill" data-report="outsourcing">🔗 Outsourcing</button>
           <button class="rf-pill" data-report="tools">🧰 Tools</button>
           <button class="rf-pill" data-report="ranking">🏆 Departments &amp; Ranking</button>
         </nav>
@@ -196,6 +200,19 @@
           </div>
           <p class="muted small" style="margin:-6px 0 10px">Planned vs actual booked hours across every department and month. Switch to <b>By resource</b> to see each person's load and open their Asana assignments.</p>
           <div class="table-scroll glass"><table id="resourceTable" class="data"></table></div>
+        </div>
+
+        <!-- Outsourcing (internal vs external) -->
+        <div class="report-block" data-report="outsourcing" hidden>
+          <div class="view-head">
+            <h3 style="margin:0">Outsourcing — internal vs external</h3>
+          </div>
+          <p class="muted small" id="outScopeNote" style="margin:-6px 0 10px">Internal = work another JW department delivered for a client (mirrored as that department's internal-outsourcing income). External = outside vendors / freelancers.</p>
+          <div id="outKpis" class="kpi-row"></div>
+          <h3>By department</h3>
+          <div class="table-scroll glass"><table id="outDeptTable" class="data"></table></div>
+          <h3 style="margin-top:22px">By client</h3>
+          <div class="table-scroll glass"><table id="outClientTable" class="data"></table></div>
         </div>
 
         <!-- Tools (budget vs actual spend) -->

@@ -13,6 +13,14 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': 
 const inr = (n) => '₹' + Math.round(Number(n) || 0).toLocaleString('en-IN');
 const pct = (n) => (Number(n) * 100).toFixed(1) + '%';
 
+// Friendly labels for the internal delivery departments (wing name → label) used in the
+// internal-outsourcing picker and the Outsourcing report (user, 2026-09-18).
+const DEPT_LABELS = { 'Content Creation': 'Content', 'Web Dev': 'Web Development', 'SEO': 'SEO', 'Performance Mktg': 'Performance Marketing', 'SMM': 'Social Media', 'Guest Posting': 'Guest Posting' };
+const deptLabel = (w) => DEPT_LABELS[w] || w || '—';
+const internalProviders = () => (state.boot && state.boot.internalProviders) || ['Content Creation', 'Web Dev', 'SEO', 'Performance Mktg', 'SMM'];
+// Label for one outsourcing line — internal shows the provider department, external the job type.
+const outLineText = (o) => (o && o.kind === 'internal') ? `Internal · ${deptLabel(o.provider)}` : ((o && o.jobType) || 'Others');
+
 // A focused <input type=number> changes its value on mouse-wheel, so scrolling the
 // page was silently nudging figures. Blur the field on wheel — the page still
 // scrolls, but the number is left alone (user, 2026-08-26).
@@ -325,22 +333,16 @@ function startEntry() {
   const names = (state.boot.clientNames && state.boot.clientNames.length)
     ? state.boot.clientNames.slice()
     : [...clientGroups().keys()].sort((a, b) => a.localeCompare(b));
-  const clientSel = $('#e_client');
-  clientSel.innerHTML = '<option value="">— select client —</option>' +
-    names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
-  if (entry.clientName && names.includes(entry.clientName)) clientSel.value = entry.clientName;
-  else { entry.clientName = null; entry.accountId = null; entry.pendingWing = null; }
+  // Client is now a type-to-search field (user, 2026-09-18) instead of a long dropdown.
+  const clientInp = $('#e_client');
+  clientInp.value = (entry.clientName && names.includes(entry.clientName)) ? entry.clientName : '';
+  if (!clientInp.value) { entry.clientName = null; entry.accountId = null; entry.pendingWing = null; }
+  wireClientSearch(names);
 
   fillServiceSelect();
   fillDateSelects();
   setModeButtons();
 
-  clientSel.onchange = () => {
-    entry.clientName = clientSel.value || null;
-    entry.accountId = null;
-    fillServiceSelect();
-    afterHeadChange();
-  };
   $('#e_service').onchange = () => onServiceChange();
   $('#e_year').onchange = () => { rebuildMonth(); afterHeadChange(); };
   $('#e_monthName').onchange = () => { rebuildMonth(); afterHeadChange(); };
@@ -350,6 +352,41 @@ function startEntry() {
   const sfClear = $('#sfClear');
   if (sfClear) sfClear.onclick = () => { state.saveFeed = []; renderSaveFeed(); };
   renderSaveFeed();
+}
+
+// Type-to-search client picker for the Update screen (user, 2026-09-18). Filters the
+// existing client names; picking one sets it and fills the department select. New clients
+// are still added from the Client List, not here.
+function wireClientSearch(names) {
+  const inp = $('#e_client');
+  const box = $('#e_clientMatches');
+  if (!inp || !box) return;
+  const close = () => { box.classList.add('hidden'); box.innerHTML = ''; };
+  const show = () => {
+    const q = inp.value.trim().toLowerCase();
+    const matches = (q ? names.filter((n) => String(n).toLowerCase().includes(q)) : names).slice(0, 12);
+    box.innerHTML = matches.length
+      ? matches.map((n) => `<div class="res-match" data-name="${esc(n)}"><span class="rm-left">${esc(n)}</span></div>`).join('')
+      : `<div class="res-match muted">No client matches “${esc(inp.value)}”. Add it in Client List.</div>`;
+    box.classList.remove('hidden');
+  };
+  inp.oninput = show;
+  inp.onfocus = show;
+  const pick = (ev) => {
+    const m = ev.target.closest('.res-match[data-name]');
+    if (!m) return;
+    ev.preventDefault();
+    const name = m.getAttribute('data-name');
+    inp.value = name;
+    entry.clientName = name;
+    entry.accountId = null;
+    close();
+    fillServiceSelect();
+    afterHeadChange();
+  };
+  box.addEventListener('mousedown', pick);
+  box.addEventListener('touchstart', pick, { passive: false });
+  inp.onblur = () => setTimeout(close, 200);
 }
 
 // Live "recent updates" feed (user, 2026-08-26). Each saved entry is logged above the
@@ -603,7 +640,7 @@ function plannedRefBlock() {
     : '<div class="muted small">No resources were planned.</div>';
   const outBlock = planOut.length ? `
     <div class="pr-sub">Planned outsourcing</div>
-    ${planOut.map((o) => `<div class="pr-line"><span>${esc(o.jobType || 'Others')}</span><span class="val">${inr(o.cost)}</span></div>`).join('')}` : '';
+    ${planOut.map((o) => `<div class="pr-line"><span>${esc(outLineText(o))}</span><span class="val">${inr(o.cost)}</span></div>`).join('')}` : '';
   const notesBlock = planNotes ? `
     <div class="pr-sub">Planned notes</div>
     <div class="pr-line"><span class="pr-notes">${esc(planNotes)}</span></div>` : '';
@@ -765,10 +802,16 @@ function renderEntryBody() {
     </div>
 
     <div class="entry-field">
-      <label class="ef-label">Outsourcing / freelance costs — ${entry.mode === 'planned' ? 'planned / budget' : 'actual'}</label>
+      <label class="ef-label">Outsourcing costs — ${entry.mode === 'planned' ? 'planned / budget' : 'actual'}</label>
+      <p class="muted small" style="margin:2px 0 8px"><b>Internal</b> = work another JW department did for this client (pick the provider). <b>External</b> = a freelancer / outside vendor.</p>
       <div id="e_outList"></div>
       <div class="out-add">
-        <select id="e_outType">${(state.boot.jobTypes || ['Others']).map((j) => `<option value="${esc(j)}">${esc(j)}</option>`).join('')}</select>
+        <select id="e_outKind" title="Internal (another department) or External (outside vendor)">
+          <option value="external">External</option>
+          <option value="internal">Internal</option>
+        </select>
+        <select id="e_outType" title="Job type">${(state.boot.jobTypes || ['Others']).map((j) => `<option value="${esc(j)}">${esc(j)}</option>`).join('')}</select>
+        <select id="e_outProvider" class="hidden" title="Which department provided the work">${internalProviders().map((w) => `<option value="${esc(w)}">${esc(deptLabel(w))}</option>`).join('')}</select>
         <input id="e_outCost" type="number" min="0" step="1" placeholder="Cost ₹" />
         <button type="button" id="e_outAdd" class="btn btn-sm">+ Add</button>
       </div>
@@ -803,13 +846,26 @@ function renderEntryBody() {
   wireResSearch();
   if (canManageTeam) $('#e_manageTeam').onclick = manageTeam;
 
-  // outsourcing
+  // outsourcing — Internal (provider department) vs External (job type)
   renderOutsourcing();
+  const outKind = $('#e_outKind');
+  const syncOutKind = () => {
+    const internal = outKind.value === 'internal';
+    $('#e_outProvider').classList.toggle('hidden', !internal);
+    $('#e_outType').classList.toggle('hidden', internal);
+  };
+  outKind.onchange = syncOutKind; syncOutKind();
   $('#e_outAdd').onclick = () => {
     const cost = Number($('#e_outCost').value) || 0;
     if (!cost) return;
     const arr = entry.data[f.out] || (entry.data[f.out] = []);
-    arr.push({ jobType: $('#e_outType').value, cost, vendor: '' });
+    const kind = outKind.value === 'internal' ? 'internal' : 'external';
+    if (kind === 'internal') {
+      const provider = $('#e_outProvider').value;
+      arr.push({ kind, provider, jobType: deptLabel(provider), cost, vendor: '' });
+    } else {
+      arr.push({ kind, provider: '', jobType: $('#e_outType').value, cost, vendor: '' });
+    }
     $('#e_outCost').value = '';
     renderOutsourcing(); renderPreview();
   };
@@ -843,14 +899,21 @@ function renderOutsourcing() {
   const key = F().out;
   const arr = entry.data[key] || [];
   if (!arr.length) { list.innerHTML = '<p class="muted" style="margin:4px 0">None added.</p>'; return; }
-  // Show the job type and the amount as an EDITABLE ₹ field so the cost is always
-  // visible and can be corrected in place (user, 2026-09-17).
-  list.innerHTML = arr.map((o, i) => `
+  // Each line shows whether it's Internal (with the provider department) or External
+  // (with the job type), plus an EDITABLE ₹ amount that's always visible (2026-09-17/18).
+  list.innerHTML = arr.map((o, i) => {
+    const internal = o.kind === 'internal';
+    const tag = internal
+      ? '<span class="out-tag out-internal">Internal</span>'
+      : '<span class="out-tag out-external">External</span>';
+    const what = internal ? (deptLabel(o.provider) + ' team') : esc(o.jobType);
+    return `
     <div class="out-row">
-      <span class="out-job">${esc(o.jobType)}</span>
-      <span class="out-amt">₹ <input type="number" min="0" step="1" class="out-cost" data-i="${i}" value="${Number(o.cost) || 0}" aria-label="Outsourcing cost for ${esc(o.jobType)}" /></span>
+      <span class="out-job">${tag} ${esc(what)}</span>
+      <span class="out-amt">₹ <input type="number" min="0" step="1" class="out-cost" data-i="${i}" value="${Number(o.cost) || 0}" aria-label="Outsourcing cost" /></span>
       <button type="button" class="btn btn-sm btn-danger out-del" data-i="${i}">✕</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
   $$('.out-cost', list).forEach((inp) => (inp.oninput = () => {
     const row = (entry.data[key] || [])[Number(inp.dataset.i)];
     if (row) { row.cost = Number(inp.value) || 0; renderPreview(); }
@@ -1084,6 +1147,7 @@ async function loadDashboard() {
   setupPlanActual(d.comparison, d.comparisonYtd); // Plan vs Actual w/ built-in month select
   setupClientCompare(d.comparisonByClient); // Plan vs Actual per customer
   setupResources(d.resourceByClient, d.resourceByPerson, d.resourceByDept); // Resources plan vs actual + Asana
+  renderOutsourcingReport(d.outsourcingReport); // Outsourcing internal vs external
   renderToolsReport();                     // Tools budget vs actual spend
   renderWings(d.wingSummary);
   setupRanking(d.ranking);
@@ -1469,6 +1533,74 @@ function utilCell(u) {
   return `<span style="color:${col};font-weight:600">${p.toFixed(0)}%</span>`;
 }
 
+// ---- Outsourcing report: internal vs external (user, 2026-09-18) ----
+// Internal outsourcing (work one department did for another) is shown both as a cost for
+// the paying department and, mirrored, as internal-outsourcing income for the provider
+// department. Respects the global month filter. Company-wide for Super / Digital
+// Marketing; scoped to their own entries for department logins.
+function renderOutsourcingReport(rep) {
+  rep = rep || { byDept: [], byClient: [], totals: { external: 0, internal: 0, grand: 0 } };
+  const note = $('#outScopeNote');
+  if (note) note.innerHTML = (rep.scope === 'own'
+    ? 'Your department\'s outsourcing only. '
+    : 'Company-wide across every department. ') +
+    'Internal = work another JW department delivered for a client (mirrored as that department\'s internal-outsourcing income). External = outside vendors / freelancers.';
+
+  const t = rep.totals || { external: 0, internal: 0, grand: 0 };
+  const kpi = (label, value, sub) => `<div class="kpi"><div class="label">${label}</div><div class="value">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>`;
+  const okp = $('#outKpis');
+  if (okp) okp.innerHTML =
+    kpi('Total outsourcing', costSpan(t.grand)) +
+    kpi('External', costSpan(t.external)) +
+    kpi('Internal', costSpan(t.internal), 'settled between departments');
+
+  // By department: what each department PAID (external + internal) and what it EARNED as
+  // an internal provider, with the net.
+  const dRows = rep.byDept || [];
+  const dHead = ['Department', 'External paid', 'Internal paid', 'Internal income', 'Net (income − paid)'];
+  let dh = '<thead><tr>' + dHead.map((h, i) => `<th class="${i === 0 ? 'l sticky-col' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
+  if (!dRows.length) dh += `<tr><td colspan="5" class="l muted">No outsourcing logged in this scope.</td></tr>`;
+  const dt = { extPaid: 0, intPaid: 0, intIncome: 0 };
+  dRows.forEach((r) => {
+    dt.extPaid += r.extPaid; dt.intPaid += r.intPaid; dt.intIncome += r.intIncome;
+    dh += `<tr><td class="l sticky-col">${esc(deptLabel(r.dept))}</td>` +
+      `${costCell(r.extPaid)}${costCell(r.intPaid)}<td style="color:var(--green)">${r.intIncome ? inr(r.intIncome) : '—'}</td>` +
+      `${netCell(r.net)}</tr>`;
+  });
+  if (dRows.length) {
+    dh += `<tr class="row-total"><td class="l sticky-col"><b>Total</b></td>` +
+      `${costCell(dt.extPaid)}${costCell(dt.intPaid)}<td style="color:var(--green)">${inr(dt.intIncome)}</td>` +
+      `${netCell(dt.intIncome - dt.intPaid)}</tr>`;
+  }
+  const dTable = $('#outDeptTable'); if (dTable) dTable.innerHTML = dh + '</tbody>';
+
+  // By client: external + internal outsourcing cost per client, flagged if Super marked
+  // the client as an internal-outsourcing account.
+  const cRows = rep.byClient || [];
+  const cHead = ['Client', 'External', 'Internal', 'Total'];
+  let ch = '<thead><tr>' + cHead.map((h, i) => `<th class="${i === 0 ? 'l sticky-col' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
+  if (!cRows.length) ch += `<tr><td colspan="4" class="l muted">No outsourcing logged in this scope.</td></tr>`;
+  const ct = { ext: 0, intPaid: 0, total: 0 };
+  cRows.forEach((r) => {
+    ct.ext += r.ext; ct.intPaid += r.intPaid; ct.total += r.total;
+    const flag = r.internal ? ' <span class="out-tag out-internal">internal</span>' : '';
+    ch += `<tr ${rowLink('client', r.name)}><td class="l sticky-col">${esc(r.name)}${flag}</td>` +
+      `${costCell(r.ext)}${costCell(r.intPaid)}${costCell(r.total)}</tr>`;
+  });
+  if (cRows.length) {
+    ch += `<tr class="row-total"><td class="l sticky-col"><b>Total</b></td>` +
+      `${costCell(ct.ext)}${costCell(ct.intPaid)}${costCell(ct.total)}</tr>`;
+  }
+  const cTable = $('#outClientTable'); if (cTable) { cTable.innerHTML = ch + '</tbody>'; wireRowLinks(cTable); }
+}
+// Net internal settlement cell: positive (net provider/earner) green, negative (net payer) red.
+function netCell(v) {
+  const n = Number(v) || 0;
+  const col = n > 0 ? 'var(--green)' : n < 0 ? 'var(--red)' : 'var(--muted)';
+  const sign = n > 0 ? '+' : n < 0 ? '−' : '';
+  return `<td style="color:${col};font-weight:600">${sign}${inr(Math.abs(n))}</td>`;
+}
+
 // ---- Tools: budget vs actual monthly spend, per department (user, 2026-08-26) ----
 // Built client-side from the tools list + per-department budgets already in bootstrap.
 function renderToolsReport() {
@@ -1699,7 +1831,7 @@ function detailSub(it) {
     ? arr.map((r) => `<div class="pr-line"><span>${esc(r.name)}${(isSuper() && r.category) ? ` <span class="cat-tag cat-${String(r.category).toLowerCase()}">${esc(r.category)}</span>` : ''}</span><span class="val">${r.hours} hr</span></div>`).join('')
     : '<div class="muted small">None</div>';
   const outList = (arr) => (arr && arr.length)
-    ? arr.map((o) => `<div class="pr-line"><span>${esc(o.jobType || 'Others')}</span><span class="val">${inr(o.cost)}</span></div>`).join('')
+    ? arr.map((o) => `<div class="pr-line"><span>${esc(outLineText(o))}</span><span class="val">${inr(o.cost)}</span></div>`).join('')
     : '<div class="muted small">None</div>';
   const notes = (t) => t ? `<div class="d-notes">${esc(t)}</div>` : '<div class="muted small">—</div>';
   return `<div class="dc-cols">
@@ -2055,13 +2187,15 @@ function allClientNames() {
 function renderAccountsSuper() {
   const groups = clientGroups();
   const names = allClientNames();
-  const head = ['Client', 'Added', ''];
+  const internal = new Set(state.boot.internalClients || []);
+  const head = ['Client', 'Added', 'Internal outsourcing', ''];
   let html = '<thead><tr>' + head.map((h, i) => `<th class="${i < 2 ? 'l' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
-  if (!names.length) html += `<tr><td colspan="3" class="l muted">${(state.boot.clientNames || []).length ? 'No clients match the search.' : 'No clients yet. Use “+ New client”.'}</td></tr>`;
+  if (!names.length) html += `<tr><td colspan="4" class="l muted">${(state.boot.clientNames || []).length ? 'No clients match the search.' : 'No clients yet. Use “+ New client”.'}</td></tr>`;
   names.forEach((name) => {
     html += `<tr>
       <td class="l"><b>${esc(name)}</b></td>
       <td class="l muted small">${clientAddedDate(groups.get(name) || [])}</td>
+      <td><label class="io-check" title="Mark this client as one where a department books outsourcing done by another department"><input type="checkbox" class="int-client" data-name="${esc(name)}" ${internal.has(name) ? 'checked' : ''}/> internal</label></td>
       <td class="client-actions">
         <button class="btn btn-sm rename-client" data-name="${esc(name)}">Rename</button>
         <button class="btn btn-sm btn-danger del-client" data-name="${esc(name)}">Delete</button>
@@ -2071,6 +2205,7 @@ function renderAccountsSuper() {
   $('#accountsTable').innerHTML = html + '</tbody>';
   $$('.rename-client').forEach((b) => (b.onclick = () => renameClient(b.dataset.name)));
   $$('.del-client').forEach((b) => (b.onclick = () => deleteClient(b.dataset.name)));
+  $$('.int-client').forEach((cb) => (cb.onchange = () => toggleInternalClient(cb.dataset.name, cb.checked)));
   $('#addAccountBtn').classList.remove('hidden');
   const allBtn = $('#allClientsAllDeptsBtn'); if (allBtn) allBtn.classList.add('hidden'); // retired with per-client dept checkboxes
 }
@@ -2089,6 +2224,15 @@ function renderAccountsDept() {
   $('#accountsTable').innerHTML = html + '</tbody>';
   $('#addAccountBtn').classList.toggle('hidden', ro || !state.roleInfo.canCreateAccounts);
   const allBtn = $('#allClientsAllDeptsBtn'); if (allBtn) allBtn.classList.add('hidden');
+}
+
+// Super — flag/unflag a client as an internal-outsourcing account (user, 2026-09-18).
+async function toggleInternalClient(name, on) {
+  try {
+    const r = await api('/clients/internal', { method: 'PUT', body: JSON.stringify({ name, on }) });
+    state.boot.internalClients = r.internalClients || [];
+    toast(on ? `“${name}” marked internal-outsourcing` : `“${name}” unmarked`);
+  } catch (e) { toast(e.message); renderAccounts(); }
 }
 
 // Super — tick/untick a department for a client. Ticking repurposes an unassigned
