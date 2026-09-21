@@ -182,6 +182,9 @@ function publicRole(role) {
     canManageUsers: r.canManageUsers,
     canEditSettings: r.canEditSettings,
     canManageTools: r.canManageTools,
+    // Every department may add tools; Super (canManageTools) additionally edits any
+    // department's / shared tools and is the only role that may delete one.
+    canAddTools: !!(r.canManageTools || r.canAddTools),
     canManageClients: !!r.canManageClients,
     canSwitchDept: !!r.canSwitchDept,
   };
@@ -493,27 +496,61 @@ function scopedTools(req) {
     : t.department === dept);
 }
 
+// Tool add/edit rights (user, 2026-09-21): every department may add tools and edit its
+// own; Super (canManageTools) may also edit shared / other departments' tools. Deleting
+// stays Super-only (see the DELETE route) so no department can remove another's data.
+function requireToolAdd(req, res, next) {
+  if (req.roleDef.canManageTools || req.roleDef.canAddTools) return next();
+  return res.status(403).json({ error: 'Not allowed for your role' });
+}
+
+// True when this role has full tool control (Super); false for add-only departments.
+function isToolManager(req) {
+  return !!req.roleDef.canManageTools;
+}
+
+// Clamp an add-only department's tool payload to its own wing: it can never create /
+// keep a shared ("All departments") tool, split costs across departments, or place a
+// tool in another department. `base` is the existing tool on edits.
+function restrictToolPayloadForRole(req, b, base) {
+  if (isToolManager(req)) return b;
+  const wings = visibleWings(req.role, settings().wings);
+  const out = { ...b };
+  out.common = false;
+  delete out.deptCosts;
+  const wanted = out.department != null ? String(out.department) : (base && base.department);
+  out.department = wings.includes(wanted) ? wanted : (wings[0] || 'General');
+  return out;
+}
+
 app.get('/api/tools', auth, (req, res) => {
   res.json(scopedTools(req));
 });
 
-app.post('/api/tools', auth, requirePerm('canManageTools'), (req, res) => {
+app.post('/api/tools', auth, requireToolAdd, (req, res) => {
   const b = req.body || {};
   if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: 'Tool name required' });
   const s = settings();
   if (!Array.isArray(s.tools)) s.tools = [];
-  const tool = { id: nextToolId(), ...cleanTool(b) };
+  const tool = { id: nextToolId(), ...cleanTool(restrictToolPayloadForRole(req, b)) };
   if (!tool.startDate) tool.startDate = new Date().toISOString().slice(0, 10);
   s.tools.push(tool);
   db.save().then(() => res.json(tool));
 });
 
-app.put('/api/tools/:id', auth, requirePerm('canManageTools'), (req, res) => {
+app.put('/api/tools/:id', auth, requireToolAdd, (req, res) => {
   const id = Number(req.params.id);
   const s = settings();
   const tool = (s.tools || []).find((t) => t.id === id);
   if (!tool) return res.status(404).json({ error: 'Tool not found' });
-  Object.assign(tool, cleanTool(req.body || {}, tool));
+  // Add-only departments may edit ONLY their own department's non-shared tools.
+  if (!isToolManager(req)) {
+    const wings = visibleWings(req.role, settings().wings);
+    if (tool.common || !wings.includes(tool.department)) {
+      return res.status(403).json({ error: "You can only edit your own department's tools" });
+    }
+  }
+  Object.assign(tool, cleanTool(restrictToolPayloadForRole(req, req.body || {}, tool), tool));
   db.save().then(() => res.json(tool));
 });
 

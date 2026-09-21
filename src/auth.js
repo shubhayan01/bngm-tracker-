@@ -10,6 +10,13 @@ const jwt = require('jsonwebtoken');
 // `wings`:  '*' = every wing (subject to `except`), or an explicit array of wings.
 // `except`: only meaningful with wings '*' — wing names this role must NOT see.
 // `readOnly`: role can view reports but cannot create/edit anything.
+//
+// TOOLS (user, 2026-09-21): EVERY department may ADD tools and edit/stop its OWN
+// department's tools. `canManageTools` (Super only) is full control — it also edits
+// shared "All departments" tools, edits any department's tools, and is the ONLY role
+// that may DELETE a tool, so no department can ever remove another's data. Department
+// roles get `canAddTools` instead: add + edit-own, never delete, never touch shared
+// or other departments' tools.
 const ROLES = {
   // C. Super — everything. Only Super can edit / delete clients (departments may
   // only add them) and assign a client to departments (user, 2026-08-21).
@@ -19,19 +26,18 @@ const ROLES = {
   // (user, 2026-09-14, #8). It can see, fill, fetch, check and update any department
   // via the top-bar department switcher. It cannot manage user accounts, edit global
   // assumptions/settings, or rename/delete/reassign clients (that stays Super-only).
-  admin: { label: 'Digital Marketing', wings: '*', canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false, canManageClients: false, canSwitchDept: true },
+  admin: { label: 'Digital Marketing', wings: '*', canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false, canAddTools: true, canManageClients: false, canSwitchDept: true },
 
   // Business Development — kept as a scoped department-style role. It has no delivery
   // wing of its own, so this starts empty; add wing names to grant visibility.
-  // Tool editing is Super-only (user, 2026-08-21) — bizdev can no longer manage tools.
-  bizdev: { label: 'Business Development', wings: [], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false },
+  bizdev: { label: 'Business Development', wings: [], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false, canAddTools: true },
 
-  // A. Departments — each scoped to its own wing(s).
-  seo: { label: 'SEO', wings: ['SEO', 'Guest Posting'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false },
-  content: { label: 'Content', wings: ['Content Creation'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false },
-  social: { label: 'Social Media', wings: ['SMM'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false },
-  webdev: { label: 'Web Development', wings: ['Web Dev'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false },
-  perfmkt: { label: 'Performance Marketing', wings: ['Performance Mktg'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false },
+  // A. Departments — each scoped to its own wing(s). Each may add + edit its own tools.
+  seo: { label: 'SEO', wings: ['SEO', 'Guest Posting'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false, canAddTools: true },
+  content: { label: 'Content', wings: ['Content Creation'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false, canAddTools: true },
+  social: { label: 'Social Media', wings: ['SMM'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false, canAddTools: true },
+  webdev: { label: 'Web Development', wings: ['Web Dev'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false, canAddTools: true },
+  perfmkt: { label: 'Performance Marketing', wings: ['Performance Mktg'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false, canAddTools: true },
 };
 
 const JWT_SECRET =

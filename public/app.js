@@ -184,7 +184,7 @@ async function startApp() {
   initUsdToggle();
   updateHelpFab();
   $$('.settings-only').forEach((e) => e.classList.toggle('hidden', !state.roleInfo.canEditSettings));
-  $('#addToolBtn').classList.toggle('hidden', !state.roleInfo.canManageTools);
+  $('#addToolBtn').classList.toggle('hidden', !(state.roleInfo.canAddTools || state.roleInfo.canManageTools));
   buildDeptSwitcher();
 
   // Read-only roles (Admin) get reports only — hide the Update tab and any
@@ -1881,9 +1881,19 @@ function toolSpentToDate(t) {
   return toolMonthlyInr(t) * monthsElapsed(t.startDate, end);
 }
 
+// A department can edit/stop only its OWN (non-shared) tool; Super manages everything
+// and is the only role shown a Delete action, so no department can remove another's data.
+function canEditToolRow(t) {
+  if (state.roleInfo.canManageTools) return true;
+  if (!state.roleInfo.canAddTools || t.common) return false;
+  return (state.boot.wings || []).includes(t.department);
+}
+
 function renderTools() {
   const all = state.boot.tools || [];
-  const canEdit = state.roleInfo.canManageTools;
+  const canAdd = state.roleInfo.canAddTools || state.roleInfo.canManageTools;
+  const canDelete = state.roleInfo.canManageTools;
+  const canEdit = canAdd; // header/empty-state hint: any adder gets an actions column
   const tbody = $('#toolsTable');
   // #7 — wire the search box (idempotent) and filter by name / description / department.
   const searchEl = $('#toolSearch');
@@ -1919,11 +1929,11 @@ function renderTools() {
       <td>${t.startDate || '—'}${stopped && t.stopDate ? `<div class="muted small">stopped ${t.stopDate}</div>` : ''}</td>
       <td>${statusTxt}</td>
       <td>${inr(toolSpentToDate(t))}</td>
-      ${canEdit ? `<td class="tool-actions-cell">
+      ${canEdit ? `<td class="tool-actions-cell">${canEditToolRow(t) ? `
         <button class="btn btn-sm tool-stop" data-id="${t.id}">${stopped ? 'Resume' : 'Stop'}</button>
         <button class="btn btn-sm edit-tool" data-id="${t.id}">Edit</button>
-        <button class="btn btn-sm tool-copy" data-id="${t.id}" title="Make an editable copy">Copy</button>
-        <button class="btn btn-sm btn-danger del-tool" data-id="${t.id}">Del</button>
+        <button class="btn btn-sm tool-copy" data-id="${t.id}" title="Make an editable copy">Copy</button>${canDelete ? `
+        <button class="btn btn-sm btn-danger del-tool" data-id="${t.id}">Del</button>` : ''}` : ''}
       </td>` : '<td></td>'}
     </tr>`;
   });
@@ -1933,18 +1943,21 @@ function renderTools() {
   $$('.tool-stop').forEach((b) => (b.onclick = () => toggleToolActive(Number(b.dataset.id))));
   $$('.tool-copy').forEach((b) => (b.onclick = () => duplicateTool(Number(b.dataset.id))));
   // #15 — right-click a tool row for a "Make a copy" (+ edit/delete) context menu.
+  // Only offered on rows the role may edit; Delete only for Super.
   if (canEdit) {
     $$('#toolsTable tr.tool-row').forEach((tr) => (tr.oncontextmenu = (e) => {
-      e.preventDefault();
       const id = Number(tr.dataset.id);
       const t = (state.boot.tools || []).find((x) => x.id === id);
+      if (!t || !canEditToolRow(t)) return; // fall through to the native menu
+      e.preventDefault();
       const stopped = t && t.active === false;
-      showContextMenu(e.clientX, e.clientY, [
+      const items = [
         { label: '📄 Make a copy', fn: () => duplicateTool(id) },
         { label: '✎ Edit', fn: () => editTool(id) },
         { label: stopped ? '▶ Resume' : '■ Stop', fn: () => toggleToolActive(id) },
-        { label: '🗑 Delete', danger: true, fn: () => deleteTool(id) },
-      ]);
+      ];
+      if (canDelete) items.push({ label: '🗑 Delete', danger: true, fn: () => deleteTool(id) });
+      showContextMenu(e.clientX, e.clientY, items);
     }));
   }
 
@@ -2044,10 +2057,13 @@ async function toggleToolActive(id) {
 // common tool, whose cost is split per department (#16 — "General" was removed).
 function editTool(id, copyFrom) {
   const ALL = 'All departments';
+  // Only Super may create a shared ("All departments") tool whose cost is split per
+  // department; a department picks from its own wings only.
+  const canCommon = isSuper();
   const t = id ? (state.boot.tools || []).find((x) => x.id === id) : (copyFrom || null);
   const wings = state.boot.wings || [];
   const curDept = t ? (t.common ? ALL : (t.department || wings[0] || ALL)) : (wings[0] || ALL);
-  const deptChoices = [...wings, ALL];
+  const deptChoices = canCommon ? [...wings, ALL] : [...wings];
   const deptOpts = [...new Set([curDept, ...deptChoices])]
     .map((d) => `<option value="${esc(d)}" ${d === curDept ? 'selected' : ''}>${esc(d)}</option>`).join('');
   const splitDepts = [...new Set([...wings, ...Object.keys((t && t.deptCosts) || {})])];
@@ -2067,7 +2083,7 @@ function editTool(id, copyFrom) {
         </select>
       </label>
     </div>
-    <span class="muted small" style="display:block;margin:-6px 0 10px">Pick <b>All departments</b> for a shared tool whose cost is split per department.</span>
+    ${canCommon ? `<span class="muted small" style="display:block;margin:-6px 0 10px">Pick <b>All departments</b> for a shared tool whose cost is split per department.</span>` : ''}
     <div class="field-row" id="t_costRow">
       <label class="field" id="t_costWrap"><span>Cost / month (per unit)</span><input id="t_cost" type="number" min="0" step="0.01" value="${t && !t.common ? (t.cost || 0) : ''}" placeholder="0" /></label>
       <label class="field" id="t_qtyWrap"><span>Quantity</span><input id="t_qty" type="number" min="1" step="1" value="${qty}" /></label>
