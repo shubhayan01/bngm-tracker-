@@ -1592,6 +1592,39 @@ function renderOutsourcingReport(rep) {
       `${costCell(ct.ext)}${costCell(ct.intPaid)}${costCell(ct.total)}</tr>`;
   }
   const cTable = $('#outClientTable'); if (cTable) { cTable.innerHTML = ch + '</tbody>'; wireRowLinks(cTable); }
+
+  // Internal-outsourcing matrix: rows = department that gave the work (payer),
+  // columns = department that delivered it. Diagonal is blank (can't outsource to self).
+  renderOutMatrix(rep.matrix);
+}
+
+// Matrix of internal outsourcing: who gave work (row) to whom (column). (user, 2026-09-23)
+function renderOutMatrix(m) {
+  const table = $('#outMatrixTable');
+  if (!table) return;
+  m = m || { depts: [], rows: [] };
+  const depts = m.depts || [];
+  const rows = m.rows || [];
+  if (!depts.length) { table.innerHTML = '<tbody><tr><td class="l muted">No internal outsourcing logged in this scope.</td></tr></tbody>'; return; }
+  let html = '<thead><tr><th class="l sticky-col">Gave ↓ / Delivered →</th>' +
+    depts.map((d) => `<th>${esc(deptLabel(d))}</th>`).join('') +
+    '<th>Total given</th></tr></thead><tbody>';
+  const colTot = depts.map(() => 0);
+  let grand = 0;
+  rows.forEach((r) => {
+    grand += r.total;
+    html += `<tr><td class="l sticky-col">${esc(deptLabel(r.dept))}</td>` +
+      r.cells.map((c, i) => {
+        if (c === null) return '<td class="muted" style="background:var(--panel-2,rgba(128,128,128,.08))">—</td>';
+        colTot[i] += c;
+        return `<td>${c ? inr(c) : '·'}</td>`;
+      }).join('') +
+      `${costCell(r.total)}</tr>`;
+  });
+  html += `<tr class="row-total"><td class="l sticky-col"><b>Total received</b></td>` +
+    colTot.map((c) => `<td>${c ? inr(c) : '·'}</td>`).join('') +
+    `${costCell(grand)}</tr>`;
+  table.innerHTML = html + '</tbody>';
 }
 // Net internal settlement cell: positive (net provider/earner) green, negative (net payer) red.
 function netCell(v) {

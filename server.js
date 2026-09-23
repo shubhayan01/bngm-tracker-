@@ -1179,6 +1179,11 @@ app.get('/api/dashboard', auth, (req, res) => {
   const outByDept = {};   // wing -> { extPaid, intPaid, intIncome }
   const outByProvider = {}; // provider wing -> internal income (from providers view)
   const outByClient = {};  // client name -> { ext, intPaid, intIncome, internal }
+  const outMatrix = {};   // payer wing -> provider wing -> internal cost (who gave work to whom)
+  const addMatrix = (payer, prov, cost) => {
+    (outMatrix[payer] || (outMatrix[payer] = {}))[prov] =
+      (outMatrix[payer][prov] || 0) + cost;
+  };
   const ensureDept = (w) => (outByDept[w] || (outByDept[w] = { dept: w, extPaid: 0, intPaid: 0, intIncome: 0 }));
   const ensureClient = (n) => (outByClient[n] || (outByClient[n] = { name: n, ext: 0, intPaid: 0, intIncome: 0, internal: internalClients.has(n) }));
   INTERNAL_PROVIDERS.forEach((w) => { ensureDept(w); outByProvider[w] = 0; });
@@ -1200,6 +1205,8 @@ app.get('/api/dashboard', auth, (req, res) => {
           ensureDept(prov).intIncome += cost;  // mirror to the provider department
           outByProvider[prov] = (outByProvider[prov] || 0) + cost;
           cb.intIncome += cost;
+          addMatrix(wing, prov, cost);         // payer wing gave this work to provider
+
         }
       } else {
         outExtTotal += cost;
@@ -1216,12 +1223,27 @@ app.get('/api/dashboard', auth, (req, res) => {
     .filter((c) => c.ext || c.intPaid)
     .map((c) => ({ ...c, total: c.ext + c.intPaid }))
     .sort((a, b) => b.total - a.total);
+  // Internal-outsourcing matrix (user, 2026-09-23): rows = department that GAVE the work
+  // (payer), columns = department that DELIVERED it (provider). A department cannot give
+  // internal work to itself, so the diagonal stays blank. Axes cover every JW provider
+  // department plus any payer wing that actually logged internal work.
+  const matrixDepts = [...new Set([...INTERNAL_PROVIDERS, ...Object.keys(outMatrix)])];
+  const outsourcingMatrix = {
+    depts: matrixDepts,
+    rows: matrixDepts.map((payer) => ({
+      dept: payer,
+      cells: matrixDepts.map((prov) => (payer === prov ? null : ((outMatrix[payer] || {})[prov] || 0))),
+      total: matrixDepts.reduce((s, prov) => s + (payer === prov ? 0 : ((outMatrix[payer] || {})[prov] || 0)), 0),
+    })),
+  };
+
   const outsourcingReport = {
     scope: canSeeAllOut ? 'all' : 'own',
     providers: INTERNAL_PROVIDERS,
     byDept: outsourcingByDept,
     byClient: outsourcingByClient,
     byProvider: outByProvider,
+    matrix: outsourcingMatrix,
     totals: { external: outExtTotal, internal: outIntTotal, grand: outExtTotal + outIntTotal },
   };
 
