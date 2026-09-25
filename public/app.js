@@ -3,6 +3,7 @@ const state = {
   token: localStorage.getItem('bngm_token') || null,
   roleInfo: null,
   boot: null, // accounts, associates, assumptions, months, wings, jobTypes, tools, fx
+  activeDepts: [], // switcher roles (Super / Digital): departments currently in view ([] = all)
 };
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -56,12 +57,13 @@ function initUsdToggle() {
   }
 }
 
-// #8 — when a switcher role (Super / Digital Marketing) has picked a department,
-// append it so bootstrap/dashboard/detail/tools are all scoped to that department.
+// #8 — when a switcher role (Super / Digital Marketing) has picked one or more
+// departments, append them (comma-separated, 2026-09-25 multi-select) so
+// bootstrap/dashboard/detail/tools are all scoped to that set of departments.
 function withDept(path) {
-  if (!state.activeDept) return path;
+  if (!state.activeDepts || !state.activeDepts.length) return path;
   const sep = path.includes('?') ? '&' : '?';
-  return path + sep + 'dept=' + encodeURIComponent(state.activeDept);
+  return path + sep + 'dept=' + encodeURIComponent(state.activeDepts.join(','));
 }
 
 async function api(path, opts = {}) {
@@ -203,21 +205,60 @@ async function startApp() {
 }
 
 // ---------------- department switcher (#8) ----------------
-// Super & Digital Marketing can pick a department to view AND edit everything as that
-// department. "All departments" (empty) restores the full cross-department view.
+// Super & Digital Marketing can pick one OR MORE departments (multi-select, 2026-09-25)
+// to view AND edit everything as those departments. Nothing ticked = all departments
+// (the full cross-department view). Rendered as a checkbox dropdown so several
+// departments can be combined without Ctrl-clicking a native multi-select.
 function buildDeptSwitcher() {
-  const sel = $('#deptSwitcher');
-  if (!sel) return;
-  if (!state.roleInfo.canSwitchDept) { sel.classList.add('hidden'); return; }
+  const host = $('#deptSwitcher');
+  if (!host) return;
+  if (!state.roleInfo.canSwitchDept) { host.classList.add('hidden'); return; }
   const depts = state.boot.allDepartments || state.boot.wings || [];
-  sel.innerHTML = '<option value="">🏢 All departments</option>' +
-    depts.map((d) => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
-  sel.value = state.activeDept || '';
-  sel.classList.remove('hidden');
-  sel.onchange = () => onDeptSwitch(sel.value);
+  // Keep the active set to departments this role can actually see.
+  state.activeDepts = (state.activeDepts || []).filter((d) => depts.includes(d));
+  host.classList.remove('hidden');
+  host.innerHTML = `
+    <button type="button" id="deptSwitchBtn" class="dept-switcher" aria-haspopup="true" aria-expanded="false"></button>
+    <div id="deptSwitchMenu" class="dept-menu hidden">
+      ${depts.map((d) => `
+        <label class="dept-opt"><input type="checkbox" value="${esc(d)}"${state.activeDepts.includes(d) ? ' checked' : ''}/> ${esc(d)}</label>`).join('')}
+    </div>`;
+  const btn = $('#deptSwitchBtn', host);
+  const menu = $('#deptSwitchMenu', host);
+  updateDeptSwitcherLabel();
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    const open = menu.classList.toggle('hidden') === false;
+    btn.setAttribute('aria-expanded', String(open));
+  };
+  menu.onclick = (e) => e.stopPropagation();
+  $$('input[type=checkbox]', menu).forEach((cb) => {
+    cb.onchange = () => {
+      state.activeDepts = $$('input[type=checkbox]:checked', menu).map((c) => c.value);
+      updateDeptSwitcherLabel();
+      onDeptSwitch();
+    };
+  });
+  // Close the menu on an outside click (registered once).
+  if (!buildDeptSwitcher._docBound) {
+    document.addEventListener('click', () => {
+      const m = $('#deptSwitchMenu'); const b = $('#deptSwitchBtn');
+      if (m) m.classList.add('hidden');
+      if (b) b.setAttribute('aria-expanded', 'false');
+    });
+    buildDeptSwitcher._docBound = true;
+  }
 }
-async function onDeptSwitch(dept) {
-  state.activeDept = dept || '';
+function updateDeptSwitcherLabel() {
+  const btn = $('#deptSwitchBtn');
+  if (!btn) return;
+  const n = (state.activeDepts || []).length;
+  btn.textContent = n === 0 ? '🏢 All departments'
+    : n === 1 ? `🏢 ${state.activeDepts[0]}`
+    : `🏢 ${n} departments`;
+  btn.title = n === 0 ? 'Viewing all departments' : `Viewing: ${state.activeDepts.join(', ')}`;
+}
+async function onDeptSwitch() {
   try {
     state.boot = await api(withDept('/bootstrap'));
     state.roleInfo = state.boot.roleInfo;
@@ -229,7 +270,10 @@ async function onDeptSwitch(dept) {
   else if (v === 'accounts') renderAccounts();
   else if (v === 'tools') renderTools();
   else switchView(v);
-  toast(dept ? `Now viewing: ${dept}` : 'Viewing all departments');
+  const n = (state.activeDepts || []).length;
+  toast(n === 0 ? 'Viewing all departments'
+    : n === 1 ? `Now viewing: ${state.activeDepts[0]}`
+    : `Now viewing: ${state.activeDepts.join(', ')}`);
 }
 
 // ---------------- nav ----------------
@@ -440,7 +484,7 @@ function logSaveFeed() {
 // Departments this role may log an entry under: the active department if one is
 // picked, else every department a switcher role can reach, else the role's own wings.
 function serviceWingsForRole() {
-  if (state.activeDept) return [state.activeDept];
+  if (state.activeDepts && state.activeDepts.length) return state.activeDepts.slice();
   if (state.roleInfo.canSwitchDept) return state.boot.allDepartments || state.boot.wings || [];
   return (state.roleInfo.wings || []).slice();
 }
@@ -1198,7 +1242,7 @@ function wireReportFilter() {
 // for that month / client in a new browser tab (replaced the old per-cell 🔍 button).
 function openDetailTab(type, key) {
   let url = `?view=detail&type=${encodeURIComponent(type)}&key=${encodeURIComponent(key)}`;
-  if (state.activeDept) url += `&dept=${encodeURIComponent(state.activeDept)}`;
+  if (state.activeDepts && state.activeDepts.length) url += `&dept=${encodeURIComponent(state.activeDepts.join(','))}`;
   // Carry the current month selection so a client drill-down matches the report scope.
   if ((state.dashMonths || []).length) url += `&months=${encodeURIComponent(state.dashMonths.join(','))}`;
   window.open(url, '_blank', 'noopener');
@@ -1766,7 +1810,9 @@ function maybeOpenDetail() {
   if (p.get('view') !== 'detail') return false;
   const type = p.get('type') === 'client' ? 'client' : 'month';
   const key = p.get('key') || '';
-  if (p.get('dept') && state.roleInfo && state.roleInfo.canSwitchDept) state.activeDept = p.get('dept');
+  if (p.get('dept') && state.roleInfo && state.roleInfo.canSwitchDept) {
+    state.activeDepts = p.get('dept').split(',').map((x) => x.trim()).filter(Boolean);
+  }
   state.detailMonths = (p.get('months') || '').split(',').map((x) => x.trim()).filter(Boolean);
   switchView('detail');
   loadDetail(type, key);

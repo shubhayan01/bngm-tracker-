@@ -793,12 +793,26 @@ table.data tbody tr.dept-head td.sticky-col { background: var(--glass-2); }
    ============================================================ */
 
 /* Top-bar department switcher (Super / Digital Marketing) */
+.dept-switcher-wrap { position: relative; }
 .dept-switcher {
-  font-size: 12.5px; font-weight: 700; padding: 6px 10px; border-radius: 20px;
+  font-size: 12.5px; font-weight: 700; padding: 6px 12px; border-radius: 20px;
   background: var(--glass-2); border: 1px solid var(--line); color: var(--text);
-  max-width: 200px; cursor: pointer;
+  max-width: 220px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.dept-switcher:focus { outline: none; border-color: var(--brand); }
+.dept-switcher:hover, .dept-switcher:focus { outline: none; border-color: var(--brand); }
+.dept-switcher[aria-expanded="true"] { border-color: var(--brand); }
+.dept-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 60;
+  min-width: 200px; max-height: 320px; overflow-y: auto; padding: 6px;
+  background: var(--surface, var(--glass-2)); border: 1px solid var(--line-strong);
+  border-radius: 12px; box-shadow: 0 12px 30px rgba(0,0,0,.28); display: flex; flex-direction: column; gap: 2px;
+}
+.dept-opt {
+  display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px;
+  font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer; white-space: nowrap;
+}
+.dept-opt:hover { background: var(--glass-2); }
+.dept-opt input { accent-color: var(--brand); cursor: pointer; margin: 0; }
 
 /* Manage-team: department checkboxes get their own full-width line under each row */
 .team-row .tm-depts, .team-add .tm-depts {

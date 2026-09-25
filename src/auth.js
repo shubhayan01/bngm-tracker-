@@ -23,10 +23,11 @@ const ROLES = {
   super: { label: 'Super Admin', wings: '*', canCreateAccounts: true, canManageUsers: true, canEditSettings: true, canManageTools: true, canManageClients: true, canSwitchDept: true },
 
   // B. Digital Marketing (was "Admin") — full read/write across EVERY department
-  // (user, 2026-09-14, #8). It can see, fill, fetch, check and update any department
-  // via the top-bar department switcher. It cannot manage user accounts, edit global
+  // EXCEPT Content Creation (user, 2026-09-25): the Digital account must not see the
+  // Content department at all; it sees/edits everything else via the top-bar switcher.
+  // (user, 2026-09-14, #8). It cannot manage user accounts, edit global
   // assumptions/settings, or rename/delete/reassign clients (that stays Super-only).
-  admin: { label: 'Digital Marketing', wings: '*', canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false, canAddTools: true, canManageClients: false, canSwitchDept: true },
+  admin: { label: 'Digital Marketing', wings: '*', except: ['Content Creation'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false, canAddTools: true, canManageClients: false, canSwitchDept: true },
 
   // Business Development — kept as a scoped department-style role. It has no delivery
   // wing of its own, so this starts empty; add wing names to grant visibility.
@@ -34,6 +35,9 @@ const ROLES = {
 
   // A. Departments — each scoped to its own wing(s). Each may add + edit its own tools.
   seo: { label: 'SEO', wings: ['SEO', 'Guest Posting'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false, canAddTools: true },
+  // Guest Posting — its own department/login (user, 2026-09-25). SEO keeps seeing Guest
+  // Posting too (it stays in seo.wings above), so this is an additional, independent login.
+  guestposting: { label: 'Guest Posting', wings: ['Guest Posting'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false, canAddTools: true },
   content: { label: 'Content', wings: ['Content Creation'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false, canAddTools: true },
   social: { label: 'Social Media', wings: ['SMM'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false, canAddTools: true },
   webdev: { label: 'Web Development', wings: ['Web Dev'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false, canAddTools: true },

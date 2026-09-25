@@ -61,22 +61,28 @@ function visibleAccounts(role) {
 }
 
 // #8 (user, 2026-09-14) — a role with `canSwitchDept` (Super, Digital Marketing) may
-// narrow the whole app to ONE department via ?dept=. These helpers apply that scope on
-// top of the role's normal visibility; without a valid dept they are the defaults.
-function requestedDept(req) {
-  const dept = req.query && req.query.dept ? String(req.query.dept) : '';
-  if (!dept || !req.roleDef || !req.roleDef.canSwitchDept) return '';
+// narrow the whole app to a set of departments via ?dept= (comma-separated, user
+// 2026-09-25: multi-select). These helpers apply that scope on top of the role's normal
+// visibility; without any valid dept they fall back to the defaults (all the role sees).
+function requestedDepts(req) {
+  const raw = req.query && req.query.dept ? String(req.query.dept) : '';
+  if (!raw || !req.roleDef || !req.roleDef.canSwitchDept) return [];
   const all = visibleWings(req.role, settings().wings);
-  return all.includes(dept) ? dept : '';
+  const picked = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  return [...new Set(picked.filter((d) => all.includes(d)))];
+}
+// Back-compat single value (first picked department, '' when none / all).
+function requestedDept(req) {
+  return requestedDepts(req)[0] || '';
 }
 function scopedAccounts(req) {
-  const dept = requestedDept(req);
-  if (dept) return db.get().accounts.filter((a) => a.wing === dept);
+  const depts = requestedDepts(req);
+  if (depts.length) return db.get().accounts.filter((a) => depts.includes(a.wing));
   return visibleAccounts(req.role);
 }
 function scopedWings(req) {
-  const dept = requestedDept(req);
-  if (dept) return [dept];
+  const depts = requestedDepts(req);
+  if (depts.length) return depts;
   return visibleWings(req.role, settings().wings);
 }
 
@@ -105,7 +111,7 @@ const MONTHS3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 
 // The five internal delivery departments an "internal" outsourcing line can name as
 // its provider (user, 2026-09-18). Values are the wing names so the report can credit
 // the provider department directly; the UI shows friendly labels.
-const INTERNAL_PROVIDERS = ['Content Creation', 'Web Dev', 'SEO', 'Performance Mktg', 'SMM'];
+const INTERNAL_PROVIDERS = ['Content Creation', 'Web Dev', 'SEO', 'Performance Mktg', 'SMM', 'Guest Posting'];
 function monthOrder(key) {
   const m = /^([A-Za-z]{3})-(\d{2})$/.exec(String(key || ''));
   if (!m) return Infinity;
@@ -207,6 +213,7 @@ app.get('/api/bootstrap', auth, async (req, res) => {
     wings: scopedWings(req),
     allDepartments: visibleWings(req.role, s.wings),
     activeDept: requestedDept(req) || '',
+    activeDepts: requestedDepts(req),
     // #10 — every distinct client name, unscoped, so any role can pick any client
     // (clients are open to all departments; the department is chosen at entry time).
     clientNames: [...new Set((db.get().accounts || []).map((a) => a.name))].sort((a, b) => String(a).localeCompare(String(b))),
@@ -489,11 +496,11 @@ function visibleTools(role) {
 // department's own tools plus any shared/common tool whose split includes it.
 function scopedTools(req) {
   const all = visibleTools(req.role);
-  const dept = requestedDept(req);
-  if (!dept) return all;
+  const depts = requestedDepts(req);
+  if (!depts.length) return all;
   return all.filter((t) => t.common
-    ? (t.deptCosts && Object.keys(t.deptCosts).includes(dept))
-    : t.department === dept);
+    ? (t.deptCosts && depts.some((d) => Object.keys(t.deptCosts).includes(d)))
+    : depts.includes(t.department));
 }
 
 // Tool add/edit rights (user, 2026-09-21): every department may add tools and edit its
@@ -1481,7 +1488,7 @@ app.get(/^\/(?!api).*/, (req, res) => {
 // wiping existing entries. Safe to run on every start.
 const DEFAULT_PASSWORDS = {
   super: 'super123', admin: 'admin123', bizdev: 'bizdev123', seo: 'seo123', content: 'content123',
-  social: 'social123', webdev: 'webdev123', perfmkt: 'perfmkt123',
+  social: 'social123', webdev: 'webdev123', perfmkt: 'perfmkt123', guestposting: 'guestposting123',
 };
 
 // First-ever boot with an empty datastore (e.g. a fresh deploy where `npm run
@@ -1609,7 +1616,7 @@ function migrate() {
   // 2) departments/wings exist
   const s = store.settings || (store.settings = {});
   if (!Array.isArray(s.wings)) s.wings = [];
-  for (const w of ['Web Dev', 'Performance Mktg']) {
+  for (const w of ['Web Dev', 'Performance Mktg', 'Guest Posting']) {
     if (!s.wings.includes(w)) { s.wings.push(w); dirty = true; }
   }
 
