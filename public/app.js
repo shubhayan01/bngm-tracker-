@@ -114,6 +114,90 @@ function addPasswordEyes(root) {
   });
 }
 
+// ---------------- sortable report tables (user, 2026-10-06) ----------------
+// One delegated handler makes every column in every Reports table sortable: click a
+// header to sort by it, click again to reverse. Delegated so it survives the frequent
+// table re-renders (refresh / filter / month changes). Total rows (.row-total) stay
+// pinned at the bottom, placeholder rows (single colspan cell) are left in place, and
+// grouped tables flagged .no-sort opt out entirely.
+(function wireSortableTables() {
+  // Read a cell's sortable text, ignoring the hidden "≈ $…" USD conversion spans so a
+  // revenue cell parses as one number rather than two concatenated ones.
+  const cellText = (cell) => {
+    if (!cell) return '';
+    const c = cell.cloneNode(true);
+    c.querySelectorAll('.usd').forEach((x) => x.remove());
+    return c.textContent.trim();
+  };
+  // Parse a cell to a number when it is purely numeric (₹, %, commas, +, both minus
+  // signs). Anything containing letters (month names, "hr", client names) stays text.
+  const toNum = (s) => {
+    if (!s || /[a-zA-Z]/.test(s)) return null;
+    const cleaned = s.replace(/−/g, '-').replace(/[^0-9.\-]/g, '');
+    if (!/[0-9]/.test(cleaned)) return null;
+    const n = parseFloat(cleaned);
+    return isNaN(n) ? null : n;
+  };
+  document.addEventListener('click', (e) => {
+    const th = e.target.closest('#view-dashboard table.data thead th');
+    if (!th) return;
+    const table = th.closest('table.data');
+    if (!table || table.classList.contains('no-sort')) return;
+    const tbody = table.tBodies[0];
+    if (!tbody) return;
+    // Grouped tables (dept-head sub-headers) can't be flat-sorted without scrambling.
+    if (tbody.querySelector('.dept-head')) return;
+    const headerCells = Array.from(th.parentNode.children);
+    const col = headerCells.indexOf(th);
+    if (col < 0) return;
+    const rows = Array.from(tbody.rows);
+    const totals = rows.filter((r) => r.classList.contains('row-total'));
+    const sortable = rows.filter((r) => !r.classList.contains('row-total') && r.cells.length === headerCells.length);
+    const others = rows.filter((r) => !totals.includes(r) && !sortable.includes(r));
+    if (sortable.length < 2) return;
+
+    const prevCol = Number(table.dataset.sortCol);
+    const dir = (prevCol === col && table.dataset.sortDir === 'asc') ? 'desc' : 'asc';
+    table.dataset.sortCol = String(col);
+    table.dataset.sortDir = dir;
+
+    // Column is numeric only if most non-empty cells parse as numbers.
+    let numVotes = 0, totalVotes = 0;
+    sortable.forEach((r) => {
+      const t = cellText(r.cells[col]);
+      if (!t || t === '—' || t === '-') return;
+      totalVotes++;
+      if (toNum(t) !== null) numVotes++;
+    });
+    const numeric = totalVotes > 0 && numVotes / totalVotes >= 0.6;
+
+    sortable.sort((a, b) => {
+      const ta = cellText(a.cells[col]), tb = cellText(b.cells[col]);
+      let cmp;
+      if (numeric) {
+        const na = toNum(ta), nb = toNum(tb);
+        if (na === null && nb === null) cmp = 0;
+        else if (na === null) cmp = 1;        // blanks / dashes sort last
+        else if (nb === null) cmp = -1;
+        else cmp = na - nb;
+      } else {
+        cmp = ta.localeCompare(tb, undefined, { numeric: true, sensitivity: 'base' });
+      }
+      return dir === 'asc' ? cmp : -cmp;
+    });
+
+    // Re-append in order: sorted data, leftover placeholders, then pinned totals.
+    // Moving existing <tr> nodes keeps their row-link click handlers intact.
+    sortable.forEach((r) => tbody.appendChild(r));
+    others.forEach((r) => tbody.appendChild(r));
+    totals.forEach((r) => tbody.appendChild(r));
+
+    headerCells.forEach((h) => { h.classList.remove('sort-asc', 'sort-desc'); h.removeAttribute('aria-sort'); });
+    th.classList.add(dir === 'asc' ? 'sort-asc' : 'sort-desc');
+    th.setAttribute('aria-sort', dir === 'asc' ? 'ascending' : 'descending');
+  });
+})();
+
 // ---------------- theme ----------------
 function setTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
@@ -1459,8 +1543,10 @@ function renderResources() {
         `<td>${hrsFmt(ph)}</td><td>${hrsFmt(ah)}</td>${varHrsCell(ah - ph)}</tr>`;
     }
     table.innerHTML = html + '</tbody>';
+    table.classList.add('no-sort'); // grouped by department — not flat-sortable
     return;
   }
+  table.classList.remove('no-sort');
 
   if (scope === 'client') {
     const rows = (state.resByClient || []).filter((r) => !q || String(r.name || '').toLowerCase().includes(q));
