@@ -931,3 +931,38 @@ table.data thead th { letter-spacing: .4px; }
 #view-dashboard table.data thead th.sort-desc::after { content: '↓'; opacity: 1; color: var(--brand); }
 #view-dashboard table.data.no-sort thead th { cursor: default; }
 #view-dashboard table.data.no-sort thead th::after { content: ''; margin-left: 0; }
+
+/* ============================================================
+   Resource department chips + allocation rule (user 2026-10-27)
+   Small pills showing which departments a resource is assigned
+   to, on the Update screen's resource picker and booked rows. A
+   warning chip flags a booking made outside the resource's
+   departments (cross-department allocation is allowed, flagged).
+   ============================================================ */
+.res-dept {
+  display: inline-block; font-size: 10.5px; line-height: 1.5; padding: 0 7px;
+  border-radius: 999px; background: var(--glass-2); border: 1px solid var(--line);
+  color: var(--muted); white-space: nowrap;
+}
+.res-dept-any { font-style: italic; opacity: .8; }
+.res-dept-warn { background: rgba(220, 70, 70, .14); border-color: rgba(220, 70, 70, .5); color: var(--red); font-weight: 600; }
+.rm-depts { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; min-width: 0; }
+.res-match.res-match-out { opacity: .78; }
+.res-depts-inline { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-left: 4px; }
+
+/* Manage-team: search box + start/end date line */
+.tm-search {
+  width: 100%; margin: 6px 0 12px; padding: 9px 12px; border-radius: 10px;
+  border: 1px solid var(--line-strong); background: var(--glass-solid); color: var(--text); font-size: 13px;
+}
+.team-row .tm-dates, .team-add .tm-dates {
+  grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center;
+  padding: 6px 2px 2px; margin-top: 2px;
+}
+.team-row .tm-dates label, .team-add .tm-dates label {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);
+}
+.team-row .tm-dates input, .team-add .tm-dates input {
+  padding: 5px 8px; border-radius: 8px; border: 1px solid var(--line-strong);
+  background: var(--glass-solid); color: var(--text); font-size: 12px;
+}

@@ -593,14 +593,33 @@ function cleanDepartments(v) {
   return out;
 }
 
+// Associate start / end dates (user, 2026-10-27): optional ISO dates (YYYY-MM-DD); any
+// other value is stored as empty (unset).
+function cleanDate(v) {
+  const s = String(v == null ? '' : v).trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
+}
+// Is `email` already used by another associate? Prevents duplicate resources
+// (user, 2026-10-27). Case-insensitive; `exceptId` skips the row being edited.
+function emailTaken(store, email, exceptId) {
+  const e = String(email || '').trim().toLowerCase();
+  if (!e) return false;
+  return (store.associates || []).some((x) => x.id !== exceptId && String(x.name || '').trim().toLowerCase() === e);
+}
+
 app.post('/api/associates', auth, requirePerm('canEditSettings'), (req, res) => {
   const b = req.body || {};
   if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: 'Name required' });
   const store = db.get();
-  const category = roster.normCategory(b.category != null ? b.category : b.type);
   const email = String(b.name).trim();
+  if (emailTaken(store, email, -1)) return res.status(409).json({ error: 'A resource with that email already exists' });
+  const category = roster.normCategory(b.category != null ? b.category : b.type);
   const fullName = (b.fullName && String(b.fullName).trim()) || roster.emailToName(email) || email;
-  const a = { id: db.nextId('associates'), name: email, fullName, category, type: roster.typeFromCategory(category), departments: cleanDepartments(b.departments) };
+  const a = {
+    id: db.nextId('associates'), name: email, fullName, category,
+    type: roster.typeFromCategory(category), departments: cleanDepartments(b.departments),
+    startDate: cleanDate(b.startDate), endDate: cleanDate(b.endDate),
+  };
   store.associates.push(a);
   db.save().then(() => res.json(a));
 });
@@ -611,7 +630,11 @@ app.put('/api/associates/:id', auth, requirePerm('canEditSettings'), (req, res) 
   const a = (store.associates || []).find((x) => x.id === id);
   if (!a) return res.status(404).json({ error: 'Resource not found' });
   const b = req.body || {};
-  if (b.name != null) a.name = String(b.name).trim();
+  if (b.name != null) {
+    const email = String(b.name).trim();
+    if (emailTaken(store, email, id)) return res.status(409).json({ error: 'A resource with that email already exists' });
+    a.name = email;
+  }
   if (b.fullName != null) a.fullName = String(b.fullName).trim();
   if (!a.fullName) a.fullName = roster.emailToName(a.name) || a.name;
   if (b.category != null || b.type != null) {
@@ -619,6 +642,8 @@ app.put('/api/associates/:id', auth, requirePerm('canEditSettings'), (req, res) 
     a.type = roster.typeFromCategory(a.category);
   }
   if (b.departments != null) a.departments = cleanDepartments(b.departments);
+  if (b.startDate != null) a.startDate = cleanDate(b.startDate);
+  if (b.endDate != null) a.endDate = cleanDate(b.endDate);
   db.save().then(() => res.json(a));
 });
 
@@ -929,13 +954,29 @@ app.get('/api/dashboard', auth, (req, res) => {
       return { e, c, acc: accById[e.accountId] };
     });
 
-  // 1) Monthly portfolio snapshot (only months with data, honouring the filter)
+  // Overview reflects ACTUAL figures (user, 2026-10-27): the monthly portfolio snapshot
+  // and the portfolio KPIs show real billed revenue (and actual-hour costs), never the
+  // plan fallback. Every other report keeps the requested `mode` (auto by default).
+  const overviewRows = store.entries
+    .filter((e) => visIds.has(e.accountId) && passMonth(e))
+    .map((e) => {
+      const c = compute.computeEntry(e, {
+        assumptions: s.assumptions,
+        toolPoolForMonth: (s.toolPool && s.toolPool[e.month]) || 0,
+        totalMonthRevenue: totals[e.month] || 0,
+        toolShare: apportionedToolShare(e, toolRevMap),
+        mode: 'actual',
+      });
+      return { e, c, acc: accById[e.accountId] };
+    });
+
+  // 1) Monthly portfolio snapshot — actual revenue per month (user, 2026-10-27)
   const monthly = displayMonths.map((m) => {
-    const mr = rows.filter((r) => r.e.month === m);
+    const mr = overviewRows.filter((r) => r.e.month === m);
     const agg = aggregate(mr, s.assumptions);
     return { month: m, ...agg };
   });
-  const ytd = aggregate(rows, s.assumptions);
+  const ytd = aggregate(overviewRows, s.assumptions);
 
   // 2) Wing summary (YTD)
   const wingSet = scopedWings(req);
@@ -1160,17 +1201,42 @@ app.get('/api/dashboard', auth, (req, res) => {
 
   // #9 — flatten the by-department map: each department with its people, both sorted
   // by actual hours, only departments/people that actually booked time.
+  // Department-level utilisation & benching (user, 2026-10-27). Each person's capacity in
+  // the scope = monthly cap × months on screen (capScope); a department's capacity = that
+  // × the number of people who booked time in it. Utilisation = actual ÷ capacity;
+  // benching hours = idle capacity; benching % = idle ÷ capacity.
   const resourceByDept = Object.values(resByDept)
-    .map((d) => ({
-      dept: d.dept,
-      planHours: d.planHours,
-      actualHours: d.actualHours,
-      hoursVariance: d.actualHours - d.planHours,
-      people: Object.values(d.people)
+    .map((d) => {
+      const people = Object.values(d.people)
         .filter((p) => p.planHours || p.actualHours)
-        .map((p) => ({ ...p, hoursVariance: p.actualHours - p.planHours }))
-        .sort((a, b) => b.actualHours - a.actualHours),
-    }))
+        .map((p) => {
+          const capacity = capScope;
+          const hoursLeft = capacity - p.actualHours;
+          return {
+            ...p,
+            hoursVariance: p.actualHours - p.planHours,
+            capacity, hoursLeft,
+            benchingHours: Math.max(0, hoursLeft),
+            utilisation: capacity ? p.actualHours / capacity : 0,
+            benchingPct: capacity ? Math.max(0, hoursLeft) / capacity : 0,
+          };
+        })
+        .sort((a, b) => b.actualHours - a.actualHours);
+      const capacity = capScope * people.length;
+      const hoursLeft = capacity - d.actualHours;
+      return {
+        dept: d.dept,
+        planHours: d.planHours,
+        actualHours: d.actualHours,
+        hoursVariance: d.actualHours - d.planHours,
+        headcount: people.length,
+        capacity, hoursLeft,
+        benchingHours: Math.max(0, hoursLeft),
+        utilisation: capacity ? d.actualHours / capacity : 0,
+        benchingPct: capacity ? Math.max(0, hoursLeft) / capacity : 0,
+        people,
+      };
+    })
     .filter((d) => d.planHours || d.actualHours)
     .sort((a, b) => b.actualHours - a.actualHours);
 

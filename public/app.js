@@ -725,6 +725,24 @@ function assocById(id) { return (state.boot.associates || []).find((a) => a.id =
 // A resource's display name (its real name if we have one, otherwise the email).
 function assocLabel(a) { return (a && (a.fullName || a.name)) || ''; }
 function assocEmail(a) { return (a && a.name) || ''; }
+// Department allocation rule (user, 2026-10-27): a resource may be booked freely on a
+// client in a department they're assigned to. A resource with NO department set is
+// unrestricted; booking an assigned resource outside their departments is allowed but
+// flagged, so cross-department allocation is always a conscious choice.
+function assocDepts(a) { return (a && Array.isArray(a.departments)) ? a.departments : []; }
+function assocInDept(a, wing) { const ds = assocDepts(a); return !wing || !ds.length || ds.includes(wing); }
+// The department (wing) of the entry currently being edited — a saved account's wing,
+// or the pending wing for an unsaved entry.
+function currentEntryWing() {
+  const acc = state.boot.accounts.find((a) => a.id === entry.accountId);
+  return acc ? acc.wing : entry.pendingWing;
+}
+// Small chips listing the departments a resource works in (for the Update screen).
+function deptChips(a) {
+  const ds = assocDepts(a);
+  if (!ds.length) return '<span class="res-dept res-dept-any">any dept</span>';
+  return ds.map((d) => `<span class="res-dept">${esc(d)}</span>`).join('');
+}
 
 // Planned hours booked for a resource (reference shown while filling Actuals).
 function plannedHoursFor(id) {
@@ -808,9 +826,13 @@ function renderResRows() {
     const full = cap - used - cur <= 0;
     const ph = showPlan ? plannedHoursFor(id) : 0;
     const planTag = showPlan && ph ? `<span class="res-plan" title="Hours expected during planning">expected ${ph} hr</span>` : '';
+    // Show the resource's department(s) and flag an out-of-department booking.
+    const wing = currentEntryWing();
+    const out = a && wing && !assocInDept(a, wing);
+    const deptInfo = a ? `<span class="res-depts-inline">${deptChips(a)}${out ? ` <span class="res-dept res-dept-warn" title="Not assigned to ${esc(wing)}">⚠ ${esc(wing)}?</span>` : ''}</span>` : '';
     return `
     <label class="res-row ${full ? 'res-full' : ''}" data-id="${id}">
-      <span class="res-name" title="${esc(email)}">${esc(label)}${a ? ' ' + catTag(a) : ' <span class="muted small">(removed)</span>'}${planTag}</span>
+      <span class="res-name" title="${esc(email)}">${esc(label)}${a ? ' ' + catTag(a) : ' <span class="muted small">(removed)</span>'}${planTag}${deptInfo}</span>
       <input type="number" min="0" max="${maxForThis}" step="1" class="res-hrs" data-id="${id}"
              value="${cur || ''}" placeholder="${showPlan && ph ? ph + ' hrs?' : '0 hrs'}" />
       <span class="res-avail muted">${availLabel(used, cur, cap)}</span>
@@ -856,18 +878,24 @@ function wireResSearch() {
     const q = inp.value.trim().toLowerCase();
     if (!q) { close(); return; }
     const picked = entry.picked || new Set();
+    const wing = currentEntryWing();
     const matches = (state.boot.associates || [])
       .filter((a) => !picked.has(a.id) &&
         (String(a.fullName || '').toLowerCase().includes(q) ||
          String(a.name || '').toLowerCase().includes(q)))
+      // Resources assigned to this department come first (the allocation rule).
+      .sort((a, b) => (assocInDept(b, wing) ? 1 : 0) - (assocInDept(a, wing) ? 1 : 0))
       .slice(0, 8);
     if (!matches.length) {
       box.innerHTML = `<div class="res-match muted">No team member matches “${esc(inp.value)}”. Add them in Manage team.</div>`;
       box.classList.remove('hidden');
       return;
     }
-    box.innerHTML = matches.map((a) =>
-      `<div class="res-match" data-id="${a.id}"><span class="rm-left">${esc(assocLabel(a))} ${catTag(a)}</span><span class="rm-email muted small">${esc(assocEmail(a))}</span></div>`).join('');
+    box.innerHTML = matches.map((a) => {
+      const out = wing && !assocInDept(a, wing);
+      const warn = out ? ` <span class="res-dept res-dept-warn" title="Not assigned to ${esc(wing)}">⚠ not in ${esc(wing)}</span>` : '';
+      return `<div class="res-match${out ? ' res-match-out' : ''}" data-id="${a.id}"><span class="rm-left">${esc(assocLabel(a))} ${catTag(a)}</span><span class="rm-depts">${deptChips(a)}${warn}</span><span class="rm-email muted small">${esc(assocEmail(a))}</span></div>`;
+    }).join('');
     box.classList.remove('hidden');
   };
   // Select on mousedown/touchstart (fires BEFORE the input's blur) and preventDefault so
@@ -880,6 +908,9 @@ function wireResSearch() {
     const id = Number(m.dataset.id);
     if (!entry.picked) entry.picked = new Set();
     entry.picked.add(id);
+    // Allocation rule: warn when a resource is booked outside their departments.
+    const a = assocById(id); const wing = currentEntryWing();
+    if (a && wing && !assocInDept(a, wing)) toast(`${assocLabel(a)} isn't assigned to ${wing} — allocating across departments`);
     markResTouched();
     inp.value = ''; close();
     renderResRows(); renderPreview();
@@ -1154,47 +1185,86 @@ function manageTeam() {
   const render = () => {
     const catOpts = (sel) => CATEGORIES.map((c) => `<option value="${c}" ${c === sel ? 'selected' : ''}>${c}</option>`).join('');
     const list = (state.boot.associates || []).slice().sort((a, b) => assocLabel(a).localeCompare(assocLabel(b)));
+    const dateFields = (p) => `
+      <div class="tm-dates">
+        <label>Start date <input type="date" class="tm-start" value="${esc((p && p.startDate) || '')}" /></label>
+        <label>End date <input type="date" class="tm-end" value="${esc((p && p.endDate) || '')}" /></label>
+      </div>`;
     const rows = list.map((p) => `
-      <div class="team-row" data-id="${p.id}">
+      <div class="team-row" data-id="${p.id}" data-search="${esc(((p.fullName || '') + ' ' + (p.name || '')).toLowerCase())}">
         <input class="tm-fullname" type="text" value="${esc(p.fullName || '')}" placeholder="Full name" />
         <input class="tm-name" type="email" value="${esc(p.name)}" placeholder="email@domain" />
         <select class="tm-cat">${catOpts(categoryOf(p))}</select>
         <button class="btn btn-sm tm-save">Save</button>
         <button class="btn btn-sm btn-danger tm-del">✕</button>
+        ${dateFields(p)}
         ${deptList.length ? `<div class="tm-depts dept-boxes">${deptBoxes(p.departments)}</div>` : ''}
       </div>`).join('');
     const body = el('div');
     body.innerHTML = `
-      <p class="muted">Each resource has a <b>name</b> and an <b>email</b>; its category (<b>Senior · Middle · Junior</b>) drives the ₹/hr rate. Tick the <b>departments</b> each resource works in (#10).</p>
+      <p class="muted">Each resource has a <b>name</b> and an <b>email</b>; its category (<b>Senior · Middle · Junior</b>) drives the ₹/hr rate. Tick the <b>departments</b> each resource works in, and set their <b>start / end dates</b> if known. Emails must be unique — a duplicate is rejected.</p>
+      <input id="tm_search" type="search" class="tm-search" autocomplete="off" placeholder="🔍 Search team by name or email…" />
       <div id="teamList">${rows || '<p class="muted">No resources yet.</p>'}</div>
+      <p id="tm_noMatch" class="muted small hidden">No resource matches your search.</p>
       <div class="team-add">
         <input id="tm_newFullName" type="text" placeholder="New person's name" />
         <input id="tm_newName" type="email" placeholder="email@domain" />
         <select id="tm_newCat">${catOpts('Middle')}</select>
         <button id="tm_add" class="btn btn-sm btn-primary">+ Add</button>
+        ${dateFields(null)}
         ${deptList.length ? `<div class="tm-depts dept-boxes" id="tm_newDepts">${deptBoxes([])}</div>` : ''}
       </div>`;
     openModalCustom('Manage team / resources', body);
+    // Live search — filter the rows in place without rebuilding the modal (keeps focus).
+    const search = body.querySelector('#tm_search');
+    const noMatch = body.querySelector('#tm_noMatch');
+    if (search) search.oninput = () => {
+      const q = search.value.trim().toLowerCase();
+      let shown = 0;
+      body.querySelectorAll('.team-row').forEach((r) => {
+        const hit = !q || (r.dataset.search || '').includes(q);
+        r.style.display = hit ? '' : 'none';
+        if (hit) shown++;
+      });
+      if (noMatch) noMatch.classList.toggle('hidden', shown > 0);
+    };
     body.querySelectorAll('.team-row').forEach((rowEl) => {
       const id = Number(rowEl.dataset.id);
       rowEl.querySelector('.tm-save').onclick = async () => {
         const departments = [...rowEl.querySelectorAll('.tm-dept:checked')].map((c) => c.value);
-        await api('/associates/' + id, { method: 'PUT', body: JSON.stringify({ name: rowEl.querySelector('.tm-name').value, fullName: rowEl.querySelector('.tm-fullname').value, category: rowEl.querySelector('.tm-cat').value, departments }) });
-        state.boot.associates = await api('/associates'); toast('Saved'); render();
+        try {
+          await api('/associates/' + id, { method: 'PUT', body: JSON.stringify({
+            name: rowEl.querySelector('.tm-name').value, fullName: rowEl.querySelector('.tm-fullname').value,
+            category: rowEl.querySelector('.tm-cat').value, departments,
+            startDate: rowEl.querySelector('.tm-start').value, endDate: rowEl.querySelector('.tm-end').value,
+          }) });
+          state.boot.associates = await api('/associates'); toast('Saved'); render();
+        } catch (e) { toast(e.message); }
       };
       rowEl.querySelector('.tm-del').onclick = async () => {
         if (!confirm('Remove this person?')) return;
-        await api('/associates/' + id, { method: 'DELETE' });
-        state.boot.associates = await api('/associates'); toast('Removed'); render();
+        try {
+          await api('/associates/' + id, { method: 'DELETE' });
+          state.boot.associates = await api('/associates'); toast('Removed'); render();
+        } catch (e) { toast(e.message); }
       };
     });
     body.querySelector('#tm_add').onclick = async () => {
       const name = body.querySelector('#tm_newName').value.trim();
       const fullName = body.querySelector('#tm_newFullName').value.trim();
       if (!name) { toast('Email required'); return; }
+      // Catch duplicates before the round-trip (the server rejects them too).
+      if ((state.boot.associates || []).some((a) => String(a.name || '').trim().toLowerCase() === name.toLowerCase())) {
+        toast('A resource with that email already exists'); return;
+      }
       const departments = [...body.querySelectorAll('#tm_newDepts .tm-dept:checked')].map((c) => c.value);
-      await api('/associates', { method: 'POST', body: JSON.stringify({ name, fullName, category: body.querySelector('#tm_newCat').value, departments }) });
-      state.boot.associates = await api('/associates'); toast('Added'); render();
+      try {
+        await api('/associates', { method: 'POST', body: JSON.stringify({
+          name, fullName, category: body.querySelector('#tm_newCat').value, departments,
+          startDate: body.querySelector('.team-add .tm-start').value, endDate: body.querySelector('.team-add .tm-end').value,
+        }) });
+        state.boot.associates = await api('/associates'); toast('Added'); render();
+      } catch (e) { toast(e.message); }
     };
   };
   render();
@@ -1525,22 +1595,29 @@ function renderResources() {
       ...d,
       people: d.people.filter((p) => !q || String(p.name || '').toLowerCase().includes(q)),
     })).filter((d) => !q || String(d.dept || '').toLowerCase().includes(q) || d.people.length);
-    const head = ['Department / resource', 'Plan hrs', 'Actual hrs', 'Δ hrs'];
+    // Per-department utilisation & benching (user, 2026-10-27): capacity = monthly cap ×
+    // months on screen × headcount; utilisation = actual ÷ capacity; benching = idle.
+    const head = ['Department / resource', 'Plan hrs', 'Actual hrs', 'Δ hrs', 'Capacity', 'Utilisation', 'Benching hrs', 'Benching %'];
+    const cols = head.length;
     let html = '<thead><tr>' + head.map((h, i) => `<th class="${i === 0 ? 'l sticky-col' : ''}">${h}</th>`).join('') + '</tr></thead><tbody>';
-    if (!depts.length) html += `<tr><td colspan="4" class="l muted">${(state.resByDept || []).length ? 'Nothing matches the filter.' : 'No resource hours logged yet.'}</td></tr>`;
-    let ph = 0, ah = 0;
+    if (!depts.length) html += `<tr><td colspan="${cols}" class="l muted">${(state.resByDept || []).length ? 'Nothing matches the filter.' : 'No resource hours logged yet.'}</td></tr>`;
+    let ph = 0, ah = 0, capT = 0, benchT = 0;
     depts.forEach((d) => {
-      ph += d.planHours; ah += d.actualHours;
-      html += `<tr class="dept-head"><td class="l sticky-col"><b>${esc(d.dept || '—')}</b></td>` +
-        `<td><b>${hrsFmt(d.planHours)}</b></td><td><b>${hrsFmt(d.actualHours)}</b></td>${varHrsCell(d.hoursVariance)}</tr>`;
+      ph += d.planHours; ah += d.actualHours; capT += (Number(d.capacity) || 0); benchT += (Number(d.benchingHours) || 0);
+      const hc = d.headcount != null ? ` <span class="muted small">· ${d.headcount} ${d.headcount === 1 ? 'person' : 'people'}</span>` : '';
+      html += `<tr class="dept-head"><td class="l sticky-col"><b>${esc(d.dept || '—')}</b>${hc}</td>` +
+        `<td><b>${hrsFmt(d.planHours)}</b></td><td><b>${hrsFmt(d.actualHours)}</b></td>${varHrsCell(d.hoursVariance)}` +
+        `<td><b>${hrsFmt(d.capacity)}</b></td><td>${utilCell(d.utilisation)}</td><td>${hrsFmt(d.benchingHours)}</td><td>${pct(d.benchingPct)}</td></tr>`;
       d.people.forEach((p) => {
         html += `<tr><td class="l sticky-col" style="padding-left:26px">${esc(p.name)}</td>` +
-          `<td>${hrsFmt(p.planHours)}</td><td>${hrsFmt(p.actualHours)}</td>${varHrsCell(p.hoursVariance)}</tr>`;
+          `<td>${hrsFmt(p.planHours)}</td><td>${hrsFmt(p.actualHours)}</td>${varHrsCell(p.hoursVariance)}` +
+          `<td>${hrsFmt(p.capacity)}</td><td>${utilCell(p.utilisation)}</td><td>${hrsFmt(p.benchingHours)}</td><td>${pct(p.benchingPct)}</td></tr>`;
       });
     });
     if (depts.length) {
       html += `<tr class="row-total"><td class="l sticky-col"><b>Total</b></td>` +
-        `<td>${hrsFmt(ph)}</td><td>${hrsFmt(ah)}</td>${varHrsCell(ah - ph)}</tr>`;
+        `<td>${hrsFmt(ph)}</td><td>${hrsFmt(ah)}</td>${varHrsCell(ah - ph)}` +
+        `<td>${hrsFmt(capT)}</td><td>${utilCell(capT ? ah / capT : 0)}</td><td>${hrsFmt(benchT)}</td><td>${pct(capT ? benchT / capT : 0)}</td></tr>`;
     }
     table.innerHTML = html + '</tbody>';
     table.classList.add('no-sort'); // grouped by department — not flat-sortable
