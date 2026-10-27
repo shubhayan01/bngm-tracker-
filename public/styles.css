@@ -813,7 +813,7 @@ table.data tbody tr.dept-head td.sticky-col { background: var(--glass-2); }
   font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer; white-space: nowrap;
 }
 .dept-opt:hover { background: var(--glass-2); }
-.dept-opt input { accent-color: var(--brand); cursor: pointer; margin: 0; }
+.dept-opt input { width: auto; flex: 0 0 auto; padding: 0; margin: 0; accent-color: var(--brand); cursor: pointer; }
 
 /* Manage-team: department checkboxes get their own full-width line under each row */
 .team-row .tm-depts, .team-add .tm-depts {
