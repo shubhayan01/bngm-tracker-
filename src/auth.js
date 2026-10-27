@@ -44,6 +44,43 @@ const ROLES = {
   perfmkt: { label: 'Performance Marketing', wings: ['Performance Mktg'], canCreateAccounts: true, canManageUsers: false, canEditSettings: false, canManageTools: false, canAddTools: true },
 };
 
+// Custom access profiles (user, 2026-10-27). Super can create their own admin-style
+// logins from Assumptions — each is "full read/write across EVERY department except a
+// chosen few" (same powers as Digital Marketing, different exclusions). They live in the
+// datastore (`settings.adminProfiles`) and are registered here at boot and whenever Super
+// edits them, so the rest of the app resolves them exactly like a built-in role. A custom
+// profile can never grant user/settings/client management (those stay Super-only).
+let CUSTOM = {};
+
+// Build a role definition for a custom admin profile from its `except` wing list.
+function profileDef(label, except) {
+  return {
+    label: String(label || 'Custom admin'),
+    wings: '*',
+    except: Array.isArray(except) ? except.slice() : [],
+    canCreateAccounts: true, canManageUsers: false, canEditSettings: false,
+    canManageTools: false, canAddTools: true, canManageClients: false,
+    canSwitchDept: true, custom: true,
+  };
+}
+
+// Replace the custom-profile registry from a stored list [{ key, label, except }].
+// Keys that collide with a built-in role are ignored so built-ins can never be shadowed.
+function setCustomProfiles(list) {
+  const next = {};
+  for (const p of (Array.isArray(list) ? list : [])) {
+    const key = String(p && p.key || '').trim();
+    if (!key || ROLES[key]) continue;
+    next[key] = profileDef(p.label, p.except);
+  }
+  CUSTOM = next;
+}
+
+// Every role the app knows right now: built-ins plus registered custom profiles.
+function allRoles() { return { ...ROLES, ...CUSTOM }; }
+// Resolve one role (built-in or custom) to its definition, or undefined.
+function getRole(role) { return allRoles()[role]; }
+
 const JWT_SECRET =
   process.env.JWT_SECRET || 'jw-bngm-dev-secret-change-me-in-production-please';
 
@@ -61,7 +98,7 @@ function verifyToken(token) {
 
 // Does a role have access to a given wing?
 function roleCanSeeWing(role, wing) {
-  const r = ROLES[role];
+  const r = getRole(role);
   if (!r) return false;
   if (r.wings === '*') return !(Array.isArray(r.except) && r.except.includes(wing));
   return r.wings.includes(wing);
@@ -71,7 +108,7 @@ function roleCanSeeWing(role, wing) {
 // Wildcard roles ('*') get every wing minus their `except` list; scoped roles
 // get their own explicit list.
 function visibleWings(role, allWings) {
-  const r = ROLES[role];
+  const r = getRole(role);
   if (!r) return [];
   if (r.wings === '*') return (allWings || []).filter((w) => roleCanSeeWing(role, w));
   return r.wings;
@@ -79,4 +116,7 @@ function visibleWings(role, allWings) {
 
 
 
-module.exports = { ROLES, signToken, verifyToken, roleCanSeeWing, visibleWings, JWT_SECRET };
+module.exports = {
+  ROLES, signToken, verifyToken, roleCanSeeWing, visibleWings, JWT_SECRET,
+  setCustomProfiles, allRoles, getRole, profileDef,
+};

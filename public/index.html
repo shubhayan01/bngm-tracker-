@@ -320,6 +320,17 @@
             <div id="helpBotForm" class="grid-form"></div>
             <button id="saveHelpBot" class="btn btn-primary">Save help bot</button>
           </div>
+          <div class="card glass" id="profilesCard">
+            <h3>Access profiles &amp; logins</h3>
+            <p class="muted">Create admin logins that can see &amp; edit <b>every department except the ones you untick</b>. Rename, change the departments, reset the password or remove a profile at any time. Three are set up by default.</p>
+            <div id="profilesList"></div>
+            <div class="profile-add">
+              <input id="pr_newLabel" placeholder="New profile name (e.g. Ops lead)" />
+              <span class="pw-wrap"><input id="pr_newPw" type="password" placeholder="Password (optional)" autocomplete="new-password" /><button type="button" class="pw-eye" data-target="pr_newPw" aria-label="Show password" title="Show / hide password">👁</button></span>
+              <div class="profile-depts"><span class="muted small">Departments this login can see:</span><div id="pr_newDepts" class="dept-boxes"></div></div>
+              <button id="pr_add" class="btn btn-sm btn-primary">+ Create profile</button>
+            </div>
+          </div>
           <div class="card glass">
             <h3>Role passwords</h3>
             <div id="passwordForm" class="grid-form"></div>

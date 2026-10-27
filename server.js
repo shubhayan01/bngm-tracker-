@@ -4,7 +4,7 @@ const path = require('path');
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const db = require('./src/db');
-const { ROLES, signToken, verifyToken, roleCanSeeWing, visibleWings } = require('./src/auth');
+const { ROLES, signToken, verifyToken, roleCanSeeWing, visibleWings, setCustomProfiles, allRoles, getRole } = require('./src/auth');
 const compute = require('./src/compute');
 const fx = require('./src/fx');
 const roster = require('./src/roster');
@@ -34,11 +34,12 @@ function auth(req, res, next) {
   const hdr = req.headers.authorization || '';
   const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : null;
   const payload = token && verifyToken(token);
-  if (!payload || !ROLES[payload.role]) {
+  const def = payload && getRole(payload.role);
+  if (!payload || !def) {
     return res.status(401).json({ error: 'Not authenticated' });
   }
   req.role = payload.role;
-  req.roleDef = ROLES[payload.role];
+  req.roleDef = def;
   next();
 }
 
@@ -175,8 +176,15 @@ app.post('/api/login', (req, res) => {
   res.json({ token: signToken(user), role: user.role, roleInfo: publicRole(role) });
 });
 
+// Public: the access levels shown on the login screen — built-in roles plus any custom
+// profiles Super has created — as { role: label }. No auth: it exposes only role keys and
+// labels, exactly as the static login dropdown always did.
+app.get('/api/roles', (req, res) => {
+  res.json(Object.fromEntries(Object.entries(allRoles()).map(([k, v]) => [k, v.label])));
+});
+
 function publicRole(role) {
-  const r = ROLES[role];
+  const r = getRole(role);
   return {
     role,
     label: r.label,
@@ -202,7 +210,7 @@ app.get('/api/bootstrap', auth, async (req, res) => {
   const rate = await fx.getRate();
   res.json({
     roleInfo: publicRole(req.role),
-    roles: Object.fromEntries(Object.keys(ROLES).map((k) => [k, ROLES[k].label])),
+    roles: Object.fromEntries(Object.entries(allRoles()).map(([k, v]) => [k, v.label])),
     accounts: scopedAccounts(req),
     associates: db.get().associates,
     assumptions: s.assumptions,
@@ -487,7 +495,8 @@ function cleanTool(b, base = {}) {
 function visibleTools(role) {
   const s = settings();
   const all = s.tools || [];
-  if (ROLES[role] && ROLES[role].canEditSettings) return all;
+  const rdef = getRole(role);
+  if (rdef && rdef.canEditSettings) return all;
   const wings = visibleWings(role, s.wings);
   return all.filter((t) => !t.common && (t.department === 'General' || wings.includes(t.department)));
 }
@@ -1520,7 +1529,7 @@ app.put('/api/settings/help', auth, requirePerm('canEditSettings'), (req, res) =
 
 app.put('/api/settings/password', auth, requirePerm('canManageUsers'), (req, res) => {
   const { role, newPassword } = req.body || {};
-  if (!ROLES[role]) return res.status(400).json({ error: 'Unknown role' });
+  if (!getRole(role)) return res.status(400).json({ error: 'Unknown role' });
   if (!newPassword || String(newPassword).length < 4)
     return res.status(400).json({ error: 'Password must be at least 4 characters' });
   const store = db.get();
@@ -1528,6 +1537,91 @@ app.put('/api/settings/password', auth, requirePerm('canManageUsers'), (req, res
   if (!user) return res.status(404).json({ error: 'User not found' });
   user.passwordHash = bcrypt.hashSync(String(newPassword), 10);
   db.save().then(() => res.json({ ok: true, role }));
+});
+
+// ---------- custom access profiles (Super only, user 2026-10-27) ----------
+// Super-defined admin logins: "full read/write across EVERY department except a chosen
+// few" (same powers as Digital Marketing, different exclusions). Stored in
+// settings.adminProfiles = [{ key, label, except: [wings] }], each with a matching user
+// login row. Registered into the auth layer (setCustomProfiles) so every request
+// resolves them like a built-in role. Super can add, edit, re-password and delete them at
+// any time; changes take effect immediately, no restart.
+function profilesList() {
+  const s = settings();
+  if (!Array.isArray(s.adminProfiles)) s.adminProfiles = [];
+  return s.adminProfiles;
+}
+// Keep only real wing names, de-duplicated — the departments this profile must NOT see.
+function cleanExcept(v) {
+  const valid = new Set((settings().wings || []).map(String));
+  const out = [];
+  for (const w of (Array.isArray(v) ? v : [])) {
+    const name = String(w || '').trim();
+    if (valid.has(name) && !out.includes(name)) out.push(name);
+  }
+  return out;
+}
+// A unique, URL-safe role key derived from the label (never colliding with any role).
+function slugifyRole(label) {
+  const base = 'p_' + String(label || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 24);
+  const key = base === 'p_' ? 'p_' + Date.now().toString(36) : base;
+  const taken = new Set(Object.keys(allRoles()));
+  let k = key; let n = 2;
+  while (taken.has(k)) { k = key + '_' + n++; }
+  return k;
+}
+function syncProfiles() { setCustomProfiles(profilesList()); }
+
+app.get('/api/settings/profiles', auth, requirePerm('canManageUsers'), (req, res) => {
+  res.json(profilesList());
+});
+
+app.post('/api/settings/profiles', auth, requirePerm('canManageUsers'), (req, res) => {
+  const b = req.body || {};
+  const label = String(b.label || '').trim();
+  if (!label) return res.status(400).json({ error: 'Profile name required' });
+  const store = db.get();
+  const key = slugifyRole(label);
+  const prof = { key, label, except: cleanExcept(b.except) };
+  profilesList().push(prof);
+  syncProfiles();
+  const custom = b.password && String(b.password).length >= 4;
+  const pw = custom ? String(b.password) : key + '123';
+  store.users.push({
+    id: store.users.reduce((m, u) => Math.max(m, u.id || 0), 0) + 1,
+    role: key, passwordHash: bcrypt.hashSync(pw, 10),
+  });
+  db.save().then(() => res.json({ profile: prof, defaultPassword: custom ? undefined : pw }));
+});
+
+app.put('/api/settings/profiles/:key', auth, requirePerm('canManageUsers'), (req, res) => {
+  const key = String(req.params.key);
+  if (ROLES[key]) return res.status(400).json({ error: 'Built-in roles cannot be edited here' });
+  const prof = profilesList().find((p) => p.key === key);
+  if (!prof) return res.status(404).json({ error: 'Profile not found' });
+  const b = req.body || {};
+  if (b.label != null && String(b.label).trim()) prof.label = String(b.label).trim();
+  if (b.except != null) prof.except = cleanExcept(b.except);
+  syncProfiles();
+  if (b.password && String(b.password).length >= 4) {
+    const store = db.get();
+    const user = store.users.find((u) => u.role === key);
+    if (user) user.passwordHash = bcrypt.hashSync(String(b.password), 10);
+  }
+  db.save().then(() => res.json({ profile: prof }));
+});
+
+app.delete('/api/settings/profiles/:key', auth, requirePerm('canManageUsers'), (req, res) => {
+  const key = String(req.params.key);
+  if (ROLES[key]) return res.status(400).json({ error: 'Built-in roles cannot be removed' });
+  const store = db.get();
+  const list = profilesList();
+  const idx = list.findIndex((p) => p.key === key);
+  if (idx < 0) return res.status(404).json({ error: 'Profile not found' });
+  list.splice(idx, 1);
+  store.users = (store.users || []).filter((u) => u.role !== key);
+  syncProfiles();
+  db.save().then(() => res.json({ ok: true, key }));
 });
 
 // Super-only backup: download the entire datastore as one JSON file. This is the
@@ -1556,6 +1650,15 @@ const DEFAULT_PASSWORDS = {
   super: 'super123', admin: 'admin123', bizdev: 'bizdev123', seo: 'seo123', content: 'content123',
   social: 'social123', webdev: 'webdev123', perfmkt: 'perfmkt123', guestposting: 'guestposting123',
 };
+
+// Default custom access profiles seeded on first boot (user, 2026-10-27). Each is a
+// full read/write admin that sees EVERY department except those in `except`. Super can
+// edit, re-password or delete them, and create more, from Assumptions → Access profiles.
+const DEFAULT_PROFILES = [
+  { key: 'admin_nocontent', label: 'Admin — no Content', except: ['Content Creation'], pw: 'admin1pass' },
+  { key: 'admin_nocontent_social', label: 'Admin — no Content & Social', except: ['Content Creation', 'SMM'], pw: 'admin2pass' },
+  { key: 'admin_nosocial_perf', label: 'Admin — no Social & Perf Mktg', except: ['SMM', 'Performance Mktg'], pw: 'admin3pass' },
+];
 
 // First-ever boot with an empty datastore (e.g. a fresh deploy where `npm run
 // seed` was never run). Creates the default role logins plus the app config so
@@ -1684,6 +1787,29 @@ function migrate() {
   if (!Array.isArray(s.wings)) s.wings = [];
   for (const w of ['Web Dev', 'Performance Mktg', 'Guest Posting']) {
     if (!s.wings.includes(w)) { s.wings.push(w); dirty = true; }
+  }
+
+  // 2b) custom access profiles (user, 2026-10-27). Seed the three default admin logins
+  // once (only when they've never existed — if Super deletes them, `adminProfiles` stays
+  // an empty array and they are NOT re-added), register them all so the auth layer knows
+  // them, then ensure each profile has a login row.
+  if (s.adminProfiles === undefined) {
+    s.adminProfiles = DEFAULT_PROFILES.map((p) => ({ key: p.key, label: p.label, except: p.except.slice() }));
+    dirty = true;
+    console.log(`  + seeded ${s.adminProfiles.length} default access profiles`);
+  }
+  setCustomProfiles(s.adminProfiles);
+  for (const p of s.adminProfiles) {
+    if (!store.users.some((u) => u.role === p.key)) {
+      const def = DEFAULT_PROFILES.find((d) => d.key === p.key);
+      store.users.push({
+        id: store.users.reduce((m, u) => Math.max(m, u.id || 0), 0) + 1,
+        role: p.key,
+        passwordHash: bcrypt.hashSync((def && def.pw) || (p.key + '123'), 10),
+      });
+      dirty = true;
+      console.log(`  + created login for access profile "${p.key}"`);
+    }
   }
 
   // 3) accounts have an active flag

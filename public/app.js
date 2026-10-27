@@ -238,6 +238,22 @@ $('#fxBadge').addEventListener('click', async () => {
 $('#loginBtn').addEventListener('click', doLogin);
 $('#loginPassword').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
 
+// Populate the login dropdown from the server so Super's custom access profiles appear
+// as sign-in options alongside the built-in roles. Falls back silently to the static
+// list already in the HTML if the request fails.
+async function populateLoginRoles() {
+  const sel = $('#loginRole');
+  if (!sel) return;
+  try {
+    const roles = await api('/roles');
+    const keys = Object.keys(roles || {});
+    if (!keys.length) return;
+    const prev = sel.value;
+    sel.innerHTML = keys.map((k) => `<option value="${esc(k)}">${esc(roles[k])}</option>`).join('');
+    if (keys.includes(prev)) sel.value = prev;
+  } catch { /* keep the static options */ }
+}
+
 async function doLogin() {
   const role = $('#loginRole').value;
   const password = $('#loginPassword').value;
@@ -256,6 +272,7 @@ function logout() {
   $('#loginPassword').value = '';
   const fab = $('#helpFab'); if (fab) fab.classList.add('hidden');
   const hp = $('#helpPanel'); if (hp) hp.classList.add('hidden');
+  populateLoginRoles(); // pick up any profiles added this session
 }
 $('#logoutBtn').addEventListener('click', logout);
 
@@ -2740,6 +2757,9 @@ async function renderSettings() {
     } catch (e) { toast('Could not update password: ' + e.message); }
   }));
 
+  // Access profiles / custom admin logins (super only)
+  await renderProfiles();
+
   // 👁 show/hide on the freshly rendered Settings password fields (role passwords,
   // help-bot key).
   addPasswordEyes($('#view-settings'));
@@ -2761,6 +2781,74 @@ async function renderSettings() {
       a.click(); a.remove(); URL.revokeObjectURL(url);
       toast('Backup downloaded');
     } catch (e) { toast(e.message || 'Backup failed'); }
+  };
+}
+
+// ---- Access profiles: custom admin logins (user, 2026-10-27) ----
+// Super creates admin logins that see every department EXCEPT the ones unticked. Stored
+// server-side as `except` (hidden departments); the UI works in the friendlier positive
+// ("departments this login CAN see") and converts on save.
+async function renderProfiles() {
+  const card = $('#profilesCard');
+  if (!card) return;
+  if (!state.roleInfo.canManageUsers) { card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  const depts = state.boot.allDepartments || state.boot.wings || [];
+  let profiles = [];
+  try { profiles = await api('/settings/profiles'); } catch { profiles = []; }
+  const boxes = (id, checked) => depts.map((d) =>
+    `<label class="dept-box"><input type="checkbox" class="${id}" value="${esc(d)}" ${checked.includes(d) ? 'checked' : ''}/> ${esc(d)}</label>`).join('');
+  const list = $('#profilesList');
+  list.innerHTML = profiles.length ? profiles.map((p) => {
+    const canSee = depts.filter((d) => !(p.except || []).includes(d));
+    return `<div class="profile-row" data-key="${esc(p.key)}">
+      <input class="pr-label" type="text" value="${esc(p.label)}" placeholder="Profile name" />
+      <span class="pw-wrap"><input class="pr-pw" type="password" placeholder="Reset password (blank = keep)" autocomplete="new-password" /><button type="button" class="pw-eye" aria-label="Show password" title="Show / hide password">👁</button></span>
+      <div class="profile-depts"><span class="muted small">Can see:</span><div class="dept-boxes">${boxes('pr-see', canSee)}</div></div>
+      <div class="profile-actions"><button class="btn btn-sm pr-save">Save</button><button class="btn btn-sm btn-danger pr-del">Remove</button></div>
+    </div>`;
+  }).join('') : '<p class="muted small">No custom profiles yet — create one below.</p>';
+
+  $$('.profile-row', list).forEach((row) => {
+    const key = row.dataset.key;
+    row.querySelector('.pr-save').onclick = async () => {
+      const label = row.querySelector('.pr-label').value.trim();
+      const see = [...row.querySelectorAll('.pr-see:checked')].map((c) => c.value);
+      const except = depts.filter((d) => !see.includes(d));
+      const pw = row.querySelector('.pr-pw').value;
+      const body = { label, except };
+      if (pw) body.password = pw;
+      try {
+        await api('/settings/profiles/' + encodeURIComponent(key), { method: 'PUT', body: JSON.stringify(body) });
+        state.boot.roles = (await api(withDept('/bootstrap'))).roles;
+        toast('Profile saved'); renderSettings();
+      } catch (e) { toast(e.message); }
+    };
+    row.querySelector('.pr-del').onclick = async () => {
+      if (!confirm('Remove this login profile? Anyone using it can no longer sign in.')) return;
+      try {
+        await api('/settings/profiles/' + encodeURIComponent(key), { method: 'DELETE' });
+        toast('Profile removed'); renderSettings();
+      } catch (e) { toast(e.message); }
+    };
+  });
+
+  $('#pr_newDepts').innerHTML = boxes('pr-newsee', depts);
+  $('#pr_add').onclick = async () => {
+    const label = $('#pr_newLabel').value.trim();
+    if (!label) { toast('Profile name required'); return; }
+    const see = [...$$('#pr_newDepts .pr-newsee:checked')].map((c) => c.value);
+    const except = depts.filter((d) => !see.includes(d));
+    const pw = $('#pr_newPw').value;
+    const body = { label, except };
+    if (pw) body.password = pw;
+    try {
+      const r = await api('/settings/profiles', { method: 'POST', body: JSON.stringify(body) });
+      $('#pr_newLabel').value = ''; $('#pr_newPw').value = '';
+      if (r.defaultPassword) toast(`Created — default password: ${r.defaultPassword}`);
+      else toast('Profile created');
+      renderSettings();
+    } catch (e) { toast(e.message); }
   };
 }
 
@@ -2846,6 +2934,7 @@ $('#modalOk').onclick = async () => {
 
 // ---------------- boot ----------------
 (async function init() {
+  populateLoginRoles();
   if (state.token) {
     try { await startApp(); } catch { logout(); }
   }

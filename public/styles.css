@@ -966,3 +966,16 @@ table.data thead th { letter-spacing: .4px; }
   padding: 5px 8px; border-radius: 8px; border: 1px solid var(--line-strong);
   background: var(--glass-solid); color: var(--text); font-size: 12px;
 }
+
+/* ---------- access profiles (custom admin logins, user 2026-10-27) ---------- */
+.profile-row, .profile-add {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; align-items: center;
+  padding: 12px 0; border-top: 1px solid var(--line);
+}
+.profile-add { border-top: 1px dashed var(--line-strong); margin-top: 6px; }
+.profile-row .profile-depts, .profile-add .profile-depts { grid-column: 1 / -1; }
+.profile-depts > .muted { display: block; margin-bottom: 5px; }
+.profile-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
+@media (max-width: 640px) {
+  .profile-row, .profile-add { grid-template-columns: 1fr; }
+}
